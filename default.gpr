@@ -1,0 +1,15 @@
+project Default is
+
+   for Source_Dirs use (".", "Binding_Zstandard");
+
+   package Compiler is
+      for Switches ("ada") use ("-gnatVa", "-g", "-O2", "-gnat12", "-fstack-check", "-gnatyaAbBcdefiIknOprsthxlM99", "-gnatf");
+   end Compiler;
+
+   package Pretty_Printer is
+      for Default_Switches ("ada") use ("-nL", "-pL", "-M99");
+   end Pretty_Printer;
+
+   for Object_Dir use "build";
+
+end Default;
