@@ -1,0 +1,28 @@
+project Common is
+
+   type Os_Type is ("unix", "windows");
+   Opsys : Os_Type := external ("opsys", "unix");
+
+   package Compiler is
+      case Opsys is
+         when "windows" =>
+            for Default_Switches ("C") use ("-I", "../../../zstd-0.7.4-mingw/libzstd-win32/include");
+         when "unix" =>
+            for Default_Switches ("C") use ("-I", "/usr/local/include");
+      end case;
+   end Compiler;
+
+   package Linker is
+      WinZ := ("../../zstd-0.7.4-mingw/libzstd-win32/lib/libzstd.a");
+      NixZ := ("-L", "/usr/local/lib", "-lzstd");
+      case Opsys is
+         when "windows" =>
+            for Default_Switches ("C")   use WinZ;
+            for Default_Switches ("Ada") use WinZ;
+         when "unix" =>
+            for Default_Switches ("C")   use NixZ;
+            for Default_Switches ("Ada") use NixZ;
+      end case;
+   end Linker;
+
+end Common;
