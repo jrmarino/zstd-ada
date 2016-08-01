@@ -278,7 +278,40 @@ package body Zstandard.Functions is
       source_size := 0;
       output_size := 0;
       successful  := False;
-      return "TBD";
+      if not DIR.Exists (source_file) then
+         return "ERROR: Source file does not exist";
+      end if;
+
+      source_size := File_Size (DIR.Size (source_file));
+
+      declare
+         good_dump : Boolean;
+         payload : constant String := file_contents (filename => source_file,
+                                                     filesize => Natural (source_size),
+                                                     nominal  => good_dump);
+      begin
+         if not good_dump then
+            return "ERROR: Failed to read source file";
+         end if;
+
+         declare
+            good_expansion : Boolean;
+            fulldata : constant String := Decompress (source_data => payload,
+                                                      successful  => good_expansion);
+         begin
+            if not good_expansion then
+               return "ERROR: Failed to decompress data after reading source file";
+            end if;
+
+            if write_entire_file (filename => output_file, contents => fulldata) then
+               output_size := File_Size (fulldata'Length);
+               successful := True;
+               return "";
+            else
+               return "ERROR: Failed to write to open output file";
+            end if;
+         end;
+      end;
    end Decompress_File;
 
 end Zstandard.Functions;
