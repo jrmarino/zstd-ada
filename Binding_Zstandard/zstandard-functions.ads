@@ -44,16 +44,16 @@ package Zstandard.Functions is
       quality     : Compression_Level := Fastest_Compression) return String;
 
    --  This function creates an output file that is a compressed version of the "source_file".
-   --  It returns True if successful and the "error_msg" is blank in that case.  Should the
-   --  operation fail, result is False and the "error_msg" describes the problem.
+   --  It returns a blank string if successful and "successful" is set to True.  Should the
+   --  operation fail, "successful" is set to False and an error message is returned.
    --  For convenience, the size of the source and output files are also provided.
    function Compress_File
      (source_file : String;
       output_file : String;
       source_size : out File_Size;
       output_size : out File_Size;
-      error_msg   : out String;
-      quality     : Compression_Level := Fastest_Compression) return Boolean;
+      successful  : out Boolean;
+      quality     : Compression_Level := Fastest_Compression) return String;
 
 
    --------------------
@@ -68,15 +68,15 @@ package Zstandard.Functions is
       successful  : out Boolean) return String;
 
    --  This function creates an output file that is a decompressed version of the "source_file".
-   --  It returns True if successful and the "error_msg" is blank in that case.  Should the
-   --  operation fail, result is False and the "error_msg" describes the problem.
+   --  It returns a blank string if successful and "successful" is set to True.  Should the
+   --  operation fail, "successful" is set to False and an error message is returned.
    --  For convenience, the size of the source and output files are also provided.
    function Decompress_File
      (source_file : String;
       output_file : String;
       source_size : out File_Size;
       output_size : out File_Size;
-      error_msg   : out String) return Boolean;
+      successful  : out Boolean) return String;
 
    --  Helper function to dump contents of a file into a string
    --  Potentially useful when desirable to have a compressed copy of the file in memory

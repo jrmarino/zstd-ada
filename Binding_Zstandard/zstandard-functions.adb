@@ -196,17 +196,16 @@ package body Zstandard.Functions is
       output_file : String;
       source_size : out File_Size;
       output_size : out File_Size;
-      error_msg   : out String;
-      quality     : Compression_Level := Fastest_Compression) return Boolean
+      successful  : out Boolean;
+      quality     : Compression_Level := Fastest_Compression) return String
    is
       output_Handle : TIO.File_Type;
    begin
       source_size := 0;
       output_size := 0;
-      error_msg   := "";
+      successful  := False;
       if not DIR.Exists (source_file) then
-         error_msg := "ERROR: Source file does not exist";
-         return False;
+         return "ERROR: Source file does not exist";
       end if;
 
       begin
@@ -215,8 +214,7 @@ package body Zstandard.Functions is
                      Name => output_file);
       exception
          when others =>
-            error_msg := "ERROR: Failed to create output file";
-            return False;
+            return "ERROR: Failed to create output file";
       end;
 
       source_size := File_Size (DIR.Size (source_file));
@@ -229,8 +227,7 @@ package body Zstandard.Functions is
       begin
          if not good_dump then
             TIO.Close (output_Handle);
-            error_msg := "ERROR: Failed to read source file";
-            return False;
+            return "ERROR: Failed to read source file";
          end if;
 
          declare
@@ -241,20 +238,19 @@ package body Zstandard.Functions is
          begin
             if not good_compress then
                TIO.Close (output_Handle);
-               error_msg := "ERROR: Failed to compress data after reading source file";
-               return False;
+               return "ERROR: Failed to compress data after reading source file";
             end if;
 
             begin
                TIO.Put (File => output_Handle, Item => compact);
                TIO.Close (output_Handle);
                output_size := File_Size (compact'Length);
-               return True;
+               successful := True;
+               return "";
             exception
                when others =>
                   TIO.Close (output_Handle);
-                  error_msg := "ERROR: Failed to write to open output file";
-                  return False;
+                  return "ERROR: Failed to write to open output file";
             end;
          end;
       end;
@@ -269,13 +265,13 @@ package body Zstandard.Functions is
       output_file : String;
       source_size : out File_Size;
       output_size : out File_Size;
-      error_msg   : out String) return Boolean
+      successful  : out Boolean) return String
    is
    begin
       source_size := 0;
       output_size := 0;
-      error_msg := "TBD";
-      return False;
+      successful  := False;
+      return "TBD";
    end Decompress_File;
 
 end Zstandard.Functions;
