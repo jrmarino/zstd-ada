@@ -44,14 +44,17 @@ package Zstandard.Thin_Binding is
    function ZSTD_compressBound (srcSize : IC.size_t) return IC.size_t;
    pragma Import (C, ZSTD_compressBound, "ZSTD_compressBound");
 
+   --  maximum compression level available
+   function ZSTD_maxCLevel return IC.int;
+   pragma Import (C, ZSTD_maxCLevel, "ZSTD_maxCLevel");
+
    ------------------------
    --  Simple functions  --
    ------------------------
 
-   --  Compresses `srcSize` bytes from buffer `src` into buffer `dst` of size `dstCapacity`.
-   --  Destination buffer must be already allocated.
-   --  Compression runs faster if `dstCapacity` >=  `ZSTD_compressBound(srcSize)`.
-   --  @return : the number of bytes written into `dst`,
+   --  Compresses `src` buffer into already allocated `dst`.
+   --  Hint : compression runs faster if `dstCapacity` >=  `ZSTD_compressBound(srcSize)`.
+   --  @return : the number of bytes written into `dst` (<= `dstCapacity),
    --            or an error code if it fails (which can be tested using ZSTD_isError())
    function ZSTD_compress
      (dst : ICS.chars_ptr; dstCapacity : IC.size_t;
@@ -59,15 +62,31 @@ package Zstandard.Thin_Binding is
       compressionLevel : IC.int) return IC.size_t;
    pragma Import (C, ZSTD_compress, "ZSTD_compress");
 
-   --  @return : decompressed size if known, 0 otherwise.
-   --     note : to know precise reason why result is `0`, follow up with ZSTD_getFrameParams()
+   --  @return : decompressed size as a 64-bits value _if known_, 0 otherwise.
+   --   note 1 : decompressed size can be very large (64-bits value),
+   --            potentially larger than what local system can handle as a single memory segment.
+   --            In which case, it's necessary to use streaming mode to decompress data.
+   --   note 2 : decompressed size is an optional field, that may not be present.
+   --            When `return==0`, consider data to decompress could have any size.
+   --            In which case, it's necessary to use streaming mode to decompress data,
+   --            or rely on application's implied limits.
+   --            (e.g., it may know that its own data is necessarily cut into blocks <= 16 KB).
+   --   note 3 : decompressed size could be wrong or intentionally modified !
+   --            Always ensure result fits within application's authorized limits !
+   --            Each application can have its own set of conditions.
+   --            If the intention is to decompress public data compressed by zstd command line
+   --            utility, it is recommended to support at least 8 MB for extended compatibility.
+   --   note 4 : when `return==0`, if precise failure cause is needed, use ZSTD_getFrameParams()
+   --            to know more.
    function ZSTD_getDecompressedSize
      (src     : ICS.chars_ptr;
       srcSize : IC.size_t) return Zstd_uint64;
    pragma Import (C, ZSTD_getDecompressedSize, "ZSTD_getDecompressedSize");
 
    --  `compressedSize` : is the _exact_ size of compressed input, else decompression will fail.
-   --  `dstCapacity` must be equal or larger than originalSize.
+   --  `dstCapacity` must be equal or larger than originalSize (see ZSTD_getDecompressedSize() ).
+   --  If originalSize is unknown, and if there is no implied application-specific limitations,
+   --  it's necessary to use streaming mode to decompress data.
    --  @return : the number of bytes decompressed into `dst` (<= `dstCapacity`),
    --            or an errorCode if it fails (which can be tested using ZSTD_isError())
    function ZSTD_decompress
@@ -75,15 +94,12 @@ package Zstandard.Thin_Binding is
       src : ICS.chars_ptr; compressedSize : IC.size_t) return IC.size_t;
    pragma Import (C, ZSTD_decompress, "ZSTD_decompress");
 
-
    -----------------------------
    --  Simple dictionary API  --
    -----------------------------
 
-   --  Compression using a pre-defined Dictionary content (see dictBuilder).
-   --  Note 1 : This function load the dictionary, resulting in a significant startup time.
-   --  Note 2 : `dict` must remain accessible and unmodified during compression operation.
-   --  Note 3 : `dict` can be `NULL`, in which case, it's equivalent to ZSTD_compressCCtx() */
+   --  Compression using a predefined Dictionary (see dictBuilder/zdict.h).
+   --  Note : This function load the dictionary, resulting in a significant startup time.
    function ZSTD_compress_usingDict
      (ctx  : ZSTD_CCtx_ptr;
       dst  : ICS.chars_ptr; dstCapacity : IC.size_t;
@@ -92,11 +108,9 @@ package Zstandard.Thin_Binding is
       compressionLevel : IC.int) return IC.size_t;
    pragma Import (C, ZSTD_compress_usingDict, "ZSTD_compress_usingDict");
 
-   --  Decompression using a pre-defined Dictionary content (see dictBuilder).
+   --  Decompression using a predefined Dictionary (see dictBuilder/zdict.h).
    --  Dictionary must be identical to the one used during compression.
-   --  Note 1 : This function load the dictionary, resulting in a significant startup time
-   --  Note 2 : `dict` must remain accessible and unmodified during compression operation.
-   --  Note 3 : `dict` can be `NULL`, in which case, it's equivalent to ZSTD_decompressDCtx()
+   --  Note : This function load the dictionary, resulting in a significant startup time
    function ZSTD_decompress_usingDict
      (dctx : ZSTD_DCtx_ptr;
       dst  : ICS.chars_ptr; dstCapacity : IC.size_t;
@@ -104,9 +118,9 @@ package Zstandard.Thin_Binding is
       dict : ICS.chars_ptr; dictSize    : IC.size_t) return IC.size_t;
    pragma Import (C, ZSTD_decompress_usingDict, "ZSTD_decompress_usingDict");
 
-   -------------------------------
-   --  Advanced Dictionary API  --
-   -------------------------------
+   ---------------------------
+   --  Fast Dictionary API  --
+   ---------------------------
 
    --  Create a digested dictionary, ready to start compression operation without startup delay.
    --  `dict` can be released after creation
@@ -119,8 +133,8 @@ package Zstandard.Thin_Binding is
    pragma Import (C, ZSTD_freeCDict, "ZSTD_freeCDict");
 
    --  Compression using a pre-digested Dictionary.
-   --  Much faster than ZSTD_compress_usingDict() when same dictionary is used multiple times.
-   --  Note that compression level is decided during dictionary creation
+   --  Faster startup than ZSTD_compress_usingDict(), recommended when same dictionary is
+   --  used multiple times.  Note that compression level is decided during dictionary creation.
    function ZSTD_compress_usingCDict
      (ctx   : ZSTD_CCtx_ptr;
       dst   : ICS.chars_ptr; dstCapacity : IC.size_t;
@@ -136,13 +150,47 @@ package Zstandard.Thin_Binding is
    function ZSTD_freeDDict (ddict : ZSTD_DDict_ptr) return IC.size_t;
    pragma Import (C, ZSTD_freeDDict, "ZSTD_freeDDict");
 
-   --   Decompression using a pre-digested Dictionary
-   --  Much faster than ZSTD_decompress_usingDict() when same dictionary is used multiple times.
+   --  Decompression using a digested Dictionary
+   --  Faster startup than ZSTD_decompress_usingDict(), recommended when same dictionary is
+   --  used multiple times.
    function ZSTD_decompress_usingDDict
      (dctx  : ZSTD_DCtx_ptr;
       dst   : ICS.chars_ptr; dstCapacity : IC.size_t;
       src   : ICS.chars_ptr; srcSize     : IC.size_t;
       ddict : ZSTD_DDict_ptr) return IC.size_t;
    pragma Import (C, ZSTD_decompress_usingDDict, "ZSTD_decompress_usingDDict");
+
+   ----------------------------------
+   --  Explicit memory management  --
+   ----------------------------------
+
+   --  Compression context
+   function ZSTD_createCCtx return ZSTD_CCtx_ptr;
+   pragma Import (C, ZSTD_createCCtx, "ZSTD_createCCtx");
+
+   function ZSTD_freeCCtx (cctx : ZSTD_CCtx_ptr) return IC.size_t;
+   pragma Import (C, ZSTD_freeCCtx, "ZSTD_freeCCtx");
+
+   --  Same as ZSTD_compress(), requires an allocated ZSTD_CCtx (see ZSTD_createCCtx())
+   function ZSTD_compressCCtx
+     (ctx : ZSTD_CCtx_ptr;
+      dst : ICS.chars_ptr; dstCapacity : IC.size_t;
+      src : ICS.chars_ptr; srcSize     : IC.size_t;
+      compressionLevel : IC.int) return IC.size_t;
+   pragma Import (C, ZSTD_compressCCtx, "ZSTD_compressCCtx");
+
+   --  Decompression context
+   function ZSTD_createDCtx return ZSTD_DCtx_ptr;
+   pragma Import (C, ZSTD_createDCtx, "ZSTD_createDCtx");
+
+   function ZSTD_freeDCtx (dctx : ZSTD_DCtx_ptr) return IC.size_t;
+   pragma Import (C, ZSTD_freeDCtx, "ZSTD_freeDCtx");
+
+   --  Same as ZSTD_decompress(), requires an allocated ZSTD_DCtx (see ZSTD_createDCtx())
+   function ZSTD_decompressDCtx
+     (ctx : ZSTD_DCtx_ptr;
+      dst : ICS.chars_ptr; dstCapacity : IC.size_t;
+      src : ICS.chars_ptr; srcSize     : IC.size_t) return IC.size_t;
+   pragma Import (C, ZSTD_decompressDCtx, "ZSTD_decompressDCtx");
 
 end Zstandard.Thin_Binding;
