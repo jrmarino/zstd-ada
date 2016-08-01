@@ -1,0 +1,14 @@
+with "../common.gpr";
+
+project Demo is
+
+   for Languages   use ("C", "Ada");
+   for Object_Dir  use "build";
+   for Exec_Dir    use "run";
+   for Main        use ("demo_c.c", "demo_ada.adb");
+   for Source_Dirs use (".", "../../Binding_Zstandard");
+
+   package Compiler renames Common.Compiler;
+   package Linker renames Common.Linker;
+
+end Demo;
