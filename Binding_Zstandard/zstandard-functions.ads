@@ -78,6 +78,12 @@ package Zstandard.Functions is
       output_size : out File_Size;
       error_msg   : out String) return Boolean;
 
+   --  Helper function to dump contents of a file into a string
+   --  Potentially useful when desirable to have a compressed copy of the file in memory
+   function file_contents (filename : String;
+                           filesize : Natural;
+                           nominal  : out Boolean) return String;
+
 private
 
    function convert (data : Thin.IC.char_array) return String;
