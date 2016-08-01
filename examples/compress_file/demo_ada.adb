@@ -34,13 +34,14 @@ begin
    end if;
 
    declare
-      type Real4 is digits 4;
       path2file : String renames Argument (1);
       compfile  : String := path2file & ".zst";
       srcsize   : Zstandard.Functions.File_Size;
       dstsize   : Zstandard.Functions.File_Size;
       goodcomp  : Boolean;
-      percent   : Real4;
+      units     : Natural;
+      tenths    : Natural;
+      tenthstr  : String (1 .. 2);
       error_msg : String := Compress_File (source_file => path2file,
                                            output_file => compfile,
                                            source_size => srcsize,
@@ -49,10 +50,12 @@ begin
                                            quality     => level);
    begin
       if goodcomp then
-         percent := 100.0 * Real4 (dstsize) / Real4 (srcsize);
+         units := Natural (100 * dstsize / srcsize);
+         tenths := (Natural (10 * dstsize / srcsize)) mod 10;
+         tenthstr := tenths'Img;
          Put_Line ("   original file size:" & srcsize'Img);
          Put_Line (" compressed file size:" & dstsize'Img);
-         Put_Line ("percentage compressed:" & percent'Img);
+         Put_Line ("percentage compressed:" & units'Img & "." & tenthstr (2 ..2));
          Put_Line ("             new file: " & compfile);
       else
          Put_Line (error_msg);
