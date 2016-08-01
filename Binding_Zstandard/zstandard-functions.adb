@@ -3,12 +3,10 @@
 
 with Ada.Directories;
 with Ada.Direct_IO;
-with Ada.Text_IO;
 
 package body Zstandard.Functions is
 
    package DIR renames Ada.Directories;
-   package TIO renames Ada.Text_IO;
 
    --------------------
    --  Zstd_Version  --
@@ -197,9 +195,7 @@ package body Zstandard.Functions is
       source_size : out File_Size;
       output_size : out File_Size;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return String
-   is
-      output_Handle : TIO.File_Type;
+      quality     : Compression_Level := Fastest_Compression) return String is
    begin
       source_size := 0;
       output_size := 0;
@@ -207,15 +203,6 @@ package body Zstandard.Functions is
       if not DIR.Exists (source_file) then
          return "ERROR: Source file does not exist";
       end if;
-
-      begin
-         TIO.Create (File => output_Handle,
-                     Mode => TIO.Out_File,
-                     Name => output_file);
-      exception
-         when others =>
-            return "ERROR: Failed to create output file";
-      end;
 
       source_size := File_Size (DIR.Size (source_file));
 
@@ -226,7 +213,6 @@ package body Zstandard.Functions is
                                                      nominal  => good_dump);
       begin
          if not good_dump then
-            TIO.Close (output_Handle);
             return "ERROR: Failed to read source file";
          end if;
 
@@ -235,21 +221,30 @@ package body Zstandard.Functions is
             compact : constant String := Compress (source_data => payload,
                                                    successful  => good_compress,
                                                    quality     => quality);
+            new_file_size : constant Natural := compact'Length;
+
+            subtype File_String    is String (1 .. new_file_size);
+            package File_String_IO is new Ada.Direct_IO (File_String);
+            output_Handle : File_String_IO.File_Type;
          begin
             if not good_compress then
-               TIO.Close (output_Handle);
                return "ERROR: Failed to compress data after reading source file";
             end if;
 
             begin
-               TIO.Put (File => output_Handle, Item => compact);
-               TIO.Close (output_Handle);
+               File_String_IO.Create (File => output_Handle,
+                                      Mode => File_String_IO.Out_File,
+                                      Name => output_file);
+               File_String_IO.Write (output_Handle, File_String (compact));
+               File_String_IO.Close (output_Handle);
                output_size := File_Size (compact'Length);
                successful := True;
                return "";
             exception
                when others =>
-                  TIO.Close (output_Handle);
+                  if File_String_IO.Is_Open (output_Handle) then
+                     File_String_IO.Close (output_Handle);
+                  end if;
                   return "ERROR: Failed to write to open output file";
             end;
          end;
