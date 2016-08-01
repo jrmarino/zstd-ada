@@ -80,13 +80,13 @@ package Zstandard.Functions is
 
    --  Helper function to dump contents of a file into a string
    --  Potentially useful when desirable to have a compressed copy of the file in memory
-   function file_contents (filename : String;
+   function File_Contents (filename : String;
                            filesize : Natural;
                            nominal  : out Boolean) return String;
 
    --  Helper function to create a new file with the exact value of "contents" string
    --  Potentially useful for writing compressed or plain text from memory
-   function write_entire_file (filename : String; contents : String) return Boolean;
+   function Write_Entire_File (filename : String; contents : String) return Boolean;
 
 private
 
