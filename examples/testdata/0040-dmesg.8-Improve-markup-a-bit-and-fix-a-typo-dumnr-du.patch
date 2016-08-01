@@ -1,0 +1,49 @@
+From 1c3b0e82ade5cd612c1993fc122208ff459c6940 Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Sat, 23 Jul 2016 09:40:11 +0200
+Subject: [PATCH 040/100] dmesg.8: Improve markup a bit and fix a typo (dumnr
+ -> dumpnr).
+
+---
+ sbin/dmesg/dmesg.8 | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/sbin/dmesg/dmesg.8 b/sbin/dmesg/dmesg.8
+index 62e9826..ea8cf85 100644
+--- a/sbin/dmesg/dmesg.8
++++ b/sbin/dmesg/dmesg.8
+@@ -75,19 +75,23 @@ monitors the kernel for additional data and displays it as it arrives.
+ will not terminate until killed in this mode.
+ If this option is specified twice,
+ .Nm
+-will live loop (use the cpu heavily) to obtain updates as quickly as
++will live loop (using the CPU heavily) to obtain updates as quickly as
+ possible.
+ This second mode should only be used when trying to debug a kernel crashing
+ situation.
+-.It Fl M
+-Extract values associated with the name list from the specified core
++.It Fl M Ar core
++Extract values associated with the name list from the specified
++.Ar core
+ instead of the default
+ .Pa /dev/kmem .
+-.It Fl N
+-Extract the name list from the specified system instead of the default,
+-which is the kernel image the system has booted from.
+-.It Fl n Ar dumnr
+-Use the kernel core dump file numbered dumpnr for debugging.
++.It Fl N Ar system
++Extract the name list from the specified
++.Ar system
++instead of the default, which is the kernel image the system has booted from.
++.It Fl n Ar dumpnr
++Use the kernel core dump file numbered
++.Ar dumpnr
++for debugging.
+ .El
+ .Sh FILES
+ .Bl -tag -width ".Pa /var/run/dmesg.boot" -compact
+-- 
+2.7.2
+

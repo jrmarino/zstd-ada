@@ -1,0 +1,30 @@
+From 02d41d671640c77ab0dbf777229d504c8acaadbc Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Tue, 26 Jul 2016 12:53:39 -0700
+Subject: [PATCH 070/100] kernel - refactor CPUMASK_ADDR()
+
+* Refactor CPUMASK_ADDR(), removing the conditionals and just indexing the
+  array as appropriate.
+---
+ sys/cpu/x86_64/include/cpumask.h | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/sys/cpu/x86_64/include/cpumask.h b/sys/cpu/x86_64/include/cpumask.h
+index b1b3d5e..f5c5cd2 100644
+--- a/sys/cpu/x86_64/include/cpumask.h
++++ b/sys/cpu/x86_64/include/cpumask.h
+@@ -52,10 +52,7 @@
+ 
+ #define CPUMASK_SIMPLE(cpu)	((__uint64_t)1 << (cpu))
+ 
+-#define CPUMASK_ADDR(mask, cpu)						\
+-		(((cpu) < 64) ? &(mask).ary[0] :			\
+-		(((cpu) < 128) ? &(mask).ary[1] :			\
+-		(((cpu) < 192) ? &(mask).ary[2] : &(mask).ary[3])))
++#define CPUMASK_ADDR(mask, cpu)	(&(mask).ary[((cpu) >> 6) & 3])
+ 
+ #define BSRCPUMASK(val)		((val).ary[3] ? 192 + bsrq((val).ary[3]) : \
+ 				((val).ary[2] ? 128 + bsrq((val).ary[2]) : \
+-- 
+2.7.2
+

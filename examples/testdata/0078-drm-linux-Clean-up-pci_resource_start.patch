@@ -1,0 +1,44 @@
+From 89bbdcc98e01702ae70176ff08df5fb95ee0801b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Thu, 28 Jul 2016 08:56:12 +0200
+Subject: [PATCH 078/100] drm/linux: Clean-up pci_resource_start()
+
+Making it less verbose
+---
+ sys/dev/drm/include/linux/pci.h | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/sys/dev/drm/include/linux/pci.h b/sys/dev/drm/include/linux/pci.h
+index 41d8630..fbfe5aa 100644
+--- a/sys/dev/drm/include/linux/pci.h
++++ b/sys/dev/drm/include/linux/pci.h
+@@ -246,16 +246,18 @@ _pci_get_rle(struct pci_dev *pdev, int bar)
+ static inline phys_addr_t
+ pci_resource_start(struct pci_dev *pdev, int bar)
+ {
+-	struct resource_list_entry *rle;
+-
+-	rle = _pci_get_rle(pdev, bar);
+-	if (rle == NULL)
++	struct resource *res;
++	int rid;
++
++	rid = PCIR_BAR(bar);
++	res = bus_alloc_resource_any(pdev->dev, SYS_RES_MEMORY, &rid, RF_SHAREABLE);
++	if (res == NULL) {
++		kprintf("pci_resource_start(0x%x, 0x%x) failed\n",
++			pdev->device, PCIR_BAR(bar));
+ 		return -1;
++	}
+ 
+-	kprintf("pci_resource_start(0x%x, 0x%x) = 0x%lx\n",
+-		pdev->device, PCIR_BAR(bar), rman_get_start(rle->res));
+-
+-	return  rman_get_start(rle->res);
++	return rman_get_start(res);
+ }
+ 
+ static inline phys_addr_t
+-- 
+2.7.2
+

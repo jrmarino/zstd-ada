@@ -1,0 +1,91 @@
+From 9942a85186eb01e7d377406f3f6c91aba66a35ac Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sun, 17 Jul 2016 11:56:49 -0700
+Subject: [PATCH 003/100] kernel - Improve physio performance (2)
+
+* Increase the cap on pbuf_mem buffers from 256 to 512.  256
+  wasn't enough to max-out three NVMe devices.
+
+* Add 25% hysteresis to the pbuf_{mem,kva,raw}_count counters
+  to reduce unnecessary tsleep()s and wakeup()s (and thus
+  unnecessary IPIs) when the pbuf pool is exhausted.
+
+  Add a tiny bit of hysteresis for the localized *pfreecnt
+  as subsystems tend to use smaller values (e.g. pageout
+  code).
+
+* In physio tests throughput with 3 x NVMe + 4 x SATA SSDs
+  increases to 6.5 GBytes/sec and max IOPS @ 4K increases
+  to 1.05M IOPS (yes, that's million).   (random read
+  from urandom-filled partition using 32KB and 4KB blocks,
+  with high user process concurrency).
+---
+ sys/platform/pc64/x86_64/machdep.c |  4 ++--
+ sys/vm/vm_pager.c                  | 12 ++++++------
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/sys/platform/pc64/x86_64/machdep.c b/sys/platform/pc64/x86_64/machdep.c
+index 99fe54e..697a933 100644
+--- a/sys/platform/pc64/x86_64/machdep.c
++++ b/sys/platform/pc64/x86_64/machdep.c
+@@ -438,12 +438,12 @@ again:
+ 			"considerations", nbuf);
+ 	}
+ 
+-	nswbuf_mem = lmax(lmin(nbuf / 32, 256), 8);
++	nswbuf_mem = lmax(lmin(nbuf / 32, 512), 8);
+ #ifdef NSWBUF_MIN
+ 	if (nswbuf_mem < NSWBUF_MIN)
+ 		nswbuf_mem = NSWBUF_MIN;
+ #endif
+-	nswbuf_kva = lmax(lmin(nbuf / 4, 256), 16);
++	nswbuf_kva = lmax(lmin(nbuf / 4, 512), 16);
+ #ifdef NSWBUF_MIN
+ 	if (nswbuf_kva < NSWBUF_MIN)
+ 		nswbuf_kva = NSWBUF_MIN;
+diff --git a/sys/vm/vm_pager.c b/sys/vm/vm_pager.c
+index e2565dc..0112b37 100644
+--- a/sys/vm/vm_pager.c
++++ b/sys/vm/vm_pager.c
+@@ -657,10 +657,10 @@ relpbuf(struct buf *bp, int *pfreecnt)
+ 		KKASSERT(bp->b_kvabase);
+ 		spin_lock(&bswspin_mem[iter]);
+ 		TAILQ_INSERT_HEAD(&bswlist_mem[iter], bp, b_freelist);
+-		if (atomic_fetchadd_int(&pbuf_mem_count, 1) == 0)
++		if (atomic_fetchadd_int(&pbuf_mem_count, 1) == nswbuf_mem / 4)
+ 			wake = 1;
+ 		if (pfreecnt) {
+-			if (atomic_fetchadd_int(pfreecnt, 1) == 0)
++			if (atomic_fetchadd_int(pfreecnt, 1) == 1)
+ 				wake_free = 1;
+ 		}
+ 		spin_unlock(&bswspin_mem[iter]);
+@@ -670,10 +670,10 @@ relpbuf(struct buf *bp, int *pfreecnt)
+ 		KKASSERT(bp->b_kvabase);
+ 		spin_lock(&bswspin_kva[iter]);
+ 		TAILQ_INSERT_HEAD(&bswlist_kva[iter], bp, b_freelist);
+-		if (atomic_fetchadd_int(&pbuf_kva_count, 1) == 0)
++		if (atomic_fetchadd_int(&pbuf_kva_count, 1) == nswbuf_kva / 4)
+ 			wake = 1;
+ 		if (pfreecnt) {
+-			if (atomic_fetchadd_int(pfreecnt, 1) == 0)
++			if (atomic_fetchadd_int(pfreecnt, 1) == 1)
+ 				wake_free = 1;
+ 		}
+ 		spin_unlock(&bswspin_kva[iter]);
+@@ -684,10 +684,10 @@ relpbuf(struct buf *bp, int *pfreecnt)
+ 		KKASSERT(bp >= swbuf_raw && bp < &swbuf_raw[nswbuf_raw]);
+ 		spin_lock(&bswspin_raw[iter]);
+ 		TAILQ_INSERT_HEAD(&bswlist_raw[iter], bp, b_freelist);
+-		if (atomic_fetchadd_int(&pbuf_raw_count, 1) == 0)
++		if (atomic_fetchadd_int(&pbuf_raw_count, 1) == nswbuf_raw / 4)
+ 			wake = 1;
+ 		if (pfreecnt) {
+-			if (atomic_fetchadd_int(pfreecnt, 1) == 0)
++			if (atomic_fetchadd_int(pfreecnt, 1) == 1)
+ 				wake_free = 1;
+ 		}
+ 		spin_unlock(&bswspin_raw[iter]);
+-- 
+2.7.2
+

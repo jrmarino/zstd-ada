@@ -1,0 +1,61 @@
+From 5e416352dc5bd0732596c4da68625cbaf2dc9155 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Thu, 28 Jul 2016 10:12:39 -0700
+Subject: [PATCH 083/100] kernel - Be nicer to pthreads in vfork()
+
+* When vfork()ing, give the new sub-process's lwp the same TID as the one
+  that called vfork().  Even though user processes are not supposed to do
+  anything sophisticated inside a vfork() prior to exec()ing, some things
+  such as fileno() having to lock in a threaded environment might not be
+  apparent to the programmer.
+
+* By giving the sub-process the same TID, operations done inside the
+  vfork() prior to exec that interact with pthreads will not confuse
+  pthreads and cause corruption due to e.g. TID 0 clashing with TID 0
+  running in the parent that is running concurrently.
+---
+ sys/kern/kern_fork.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/sys/kern/kern_fork.c b/sys/kern/kern_fork.c
+index 7891b68..e4a1133 100644
+--- a/sys/kern/kern_fork.c
++++ b/sys/kern/kern_fork.c
+@@ -525,7 +525,6 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
+ 			atomic_add_int(&p1->p_upmap->invfork, 1);
+ 	}
+ 
+-
+ 	/*
+ 	 * Inherit the virtual kernel structure (allows a virtual kernel
+ 	 * to fork to simulate multiple cpus).
+@@ -730,12 +729,25 @@ lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
+ 	/*
+ 	 * Assign a TID to the lp.  Loop until the insert succeeds (returns
+ 	 * NULL).
++	 *
++	 * If we are in a vfork assign the same TID as the lwp that did the
++	 * vfork().  This way if the user program messes around with
++	 * pthread calls inside the vfork(), it will operate like an
++	 * extension of the (blocked) parent.  Also note that since the
++	 * address space is being shared, insofar as pthreads is concerned,
++	 * the code running in the vfork() is part of the original process.
+ 	 */
+-	lp->lwp_tid = destproc->p_lasttid;
++	if (flags & RFPPWAIT) {
++		lp->lwp_tid = origlp->lwp_tid - 1;
++	} else {
++		lp->lwp_tid = destproc->p_lasttid;
++	}
++
+ 	do {
+ 		if (++lp->lwp_tid < 0)
+ 			lp->lwp_tid = 1;
+ 	} while (lwp_rb_tree_RB_INSERT(&destproc->p_lwp_tree, lp) != NULL);
++
+ 	destproc->p_lasttid = lp->lwp_tid;
+ 	destproc->p_nthreads++;
+ 
+-- 
+2.7.2
+

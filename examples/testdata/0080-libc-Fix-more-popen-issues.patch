@@ -1,0 +1,44 @@
+From 6be058eebc5e111cbd6a27d868d172241f95cdfb Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Thu, 28 Jul 2016 10:03:08 -0700
+Subject: [PATCH 080/100] libc - Fix more popen() issues
+
+* Fix a file descriptor leak between popen() and pclose() in a threaded
+  environment.  The control structure is removed from the list, then the
+  list is unlocked, then the file is closed.  This can race a popen
+  inbetween the unlock and the closure.
+
+* Do not use fileno() inside vfork, it is a complex function in a threaded
+  environment which could lead to corruption since the vfork()'s lwp id may
+  clash with one from the parent process.
+---
+ lib/libc/gen/popen.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/lib/libc/gen/popen.c b/lib/libc/gen/popen.c
+index 35803b4..2e01678 100644
+--- a/lib/libc/gen/popen.c
++++ b/lib/libc/gen/popen.c
+@@ -139,7 +139,7 @@ popen(const char *command, const char *type)
+ 			_close(pdes[1]);
+ 		}
+ 		SLIST_FOREACH(p, &pidlist, next)
+-			_close(fileno(p->fp));
++			_close(__sfileno(p->fp));
+ 		_execve(_PATH_BSHELL, __DECONST(char * const *, argv), environ);
+ 		_exit(127);
+ 		/* NOTREACHED */
+@@ -199,6 +199,10 @@ pclose(FILE *iop)
+ 		SLIST_REMOVE_HEAD(&pidlist, next);
+ 	else
+ 		SLIST_REMOVE_AFTER(last, next);
++
++	/* re-apply close-on-exec for unlock/fclose race */
++	_fcntl(__sfileno(iop), F_SETFD, FD_CLOEXEC);
++
+ 	THREAD_UNLOCK();
+ 
+ 	fclose(iop);
+-- 
+2.7.2
+

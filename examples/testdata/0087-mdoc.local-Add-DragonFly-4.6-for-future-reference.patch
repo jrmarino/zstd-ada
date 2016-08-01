@@ -1,0 +1,24 @@
+From 47c94a29344f2ec7e7b35ded5da3292960ff2914 Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Fri, 29 Jul 2016 10:27:22 +0300
+Subject: [PATCH 087/100] mdoc.local: Add DragonFly 4.6 for future reference.
+
+---
+ gnu/usr.bin/groff/tmac/mdoc.local | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/gnu/usr.bin/groff/tmac/mdoc.local b/gnu/usr.bin/groff/tmac/mdoc.local
+index 3d8cf13..8ca84d5 100644
+--- a/gnu/usr.bin/groff/tmac/mdoc.local
++++ b/gnu/usr.bin/groff/tmac/mdoc.local
+@@ -97,6 +97,7 @@
+ .ds doc-operating-system-DragonFly-4.1 4.1
+ .ds doc-operating-system-DragonFly-4.3 4.3
+ .ds doc-operating-system-DragonFly-4.5 4.5
++.ds doc-operating-system-DragonFly-4.6 4.6
+ .ds doc-operating-system-DragonFly-4.7 4.7
+ .
+ .\" FreeBSD releases not found in doc-common.
+-- 
+2.7.2
+

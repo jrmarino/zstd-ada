@@ -1,0 +1,173 @@
+From 3b2f346367fffe181ab54f15192e2d65154552d5 Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Mon, 18 Jul 2016 18:47:44 +0300
+Subject: [PATCH 010/100] sys: Various include guard fixes.
+
+---
+ sys/bus/pci/x86_64/legacyvar.h         | 6 +++---
+ sys/dev/disk/ncv/dvcfg.h               | 7 +++----
+ sys/platform/pc64/include/pc/bios.h    | 1 -
+ sys/platform/pc64/include/pc/display.h | 6 +++++-
+ sys/sys/cons.h                         | 7 +++----
+ sys/sys/mouse.h                        | 6 +++---
+ sys/sys/thread.h                       | 2 +-
+ sys/vm/vm_object.h                     | 2 +-
+ 8 files changed, 19 insertions(+), 18 deletions(-)
+
+diff --git a/sys/bus/pci/x86_64/legacyvar.h b/sys/bus/pci/x86_64/legacyvar.h
+index bb78aaa..5134677 100644
+--- a/sys/bus/pci/x86_64/legacyvar.h
++++ b/sys/bus/pci/x86_64/legacyvar.h
+@@ -26,8 +26,8 @@
+  * $FreeBSD: src/sys/i386/include/legacyvar.h,v 1.8.8.1 2009/04/15 03:14:26 kensmith Exp $
+  */
+ 
+-#ifndef _MACHINE_LEGACYVAR_H_
+-#define	_MACHINE_LEGACYVAR_H_
++#ifndef _X86_64_LEGACYVAR_H_
++#define _X86_64_LEGACYVAR_H_
+ 
+ enum legacy_device_ivars {
+ 	LEGACY_IVAR_PCIDOMAIN,
+@@ -55,4 +55,4 @@ struct resource *legacy_pcib_alloc_resource(device_t dev, device_t child,
+     int type, int *rid, u_long start, u_long end, u_long count, u_int flags,
+     int cpuid);
+ 
+-#endif /* !_MACHINE_LEGACYVAR_H_ */
++#endif /* !_X86_64_LEGACYVAR_H_ */
+diff --git a/sys/dev/disk/ncv/dvcfg.h b/sys/dev/disk/ncv/dvcfg.h
+index 4c096d6..85c1c89 100644
+--- a/sys/dev/disk/ncv/dvcfg.h
++++ b/sys/dev/disk/ncv/dvcfg.h
+@@ -28,14 +28,13 @@
+  *
+  * $NetBSD$
+  * $FreeBSD: src/sys/i386/include/dvcfg.h,v 1.2.6.1 2000/08/03 01:01:19 peter Exp $
+- * $DragonFly: src/sys/dev/disk/ncv/dvcfg.h,v 1.7 2006/11/07 19:56:22 dillon Exp $
+  */
+ /*
+  * Copyright (c) 1996 Naofumi HONDA.  All rights reserved.
+  */
+ 
+-#ifndef _MACHINE_DVCFG_H_
+-#define _MACHINE_DVCFG_H_
++#ifndef _DVCFG_H_
++#define _DVCFG_H_
+ 
+ #ifndef _SYS_TYPES_H_
+ #include <sys/types.h>
+@@ -66,4 +65,4 @@ dvcfg_hw(struct dvcfg_hwsel *selp, u_int num)
+ }
+ 
+ #define	DVCFG_HW(SELP, NUM)	dvcfg_hw((SELP), (NUM))
+-#endif	/* _MACHINE_DVCFG_H_ */
++#endif	/* !_DVCFG_H_ */
+diff --git a/sys/platform/pc64/include/pc/bios.h b/sys/platform/pc64/include/pc/bios.h
+index 22e1244..40919a3 100644
+--- a/sys/platform/pc64/include/pc/bios.h
++++ b/sys/platform/pc64/include/pc/bios.h
+@@ -26,7 +26,6 @@
+  * SUCH DAMAGE.
+  *
+  * $FreeBSD$
+- * $DragonFly: src/sys/platform/pc64/include/pc/bios.h,v 1.1 2008/08/29 17:07:18 dillon Exp $
+  */
+ 
+ #ifndef _MACHINE_PC_BIOS_H_
+diff --git a/sys/platform/pc64/include/pc/display.h b/sys/platform/pc64/include/pc/display.h
+index 14c1297..df5564c 100644
+--- a/sys/platform/pc64/include/pc/display.h
++++ b/sys/platform/pc64/include/pc/display.h
+@@ -2,9 +2,11 @@
+  * IBM PC display definitions
+  *
+  * $FreeBSD: src/sys/i386/include/pc/display.h,v 1.5.2.1 2001/12/17 10:31:05 nyan Exp $
+- * $DragonFly: src/sys/platform/pc64/include/pc/display.h,v 1.1 2008/08/29 17:07:18 dillon Exp $
+  */
+ 
++#ifndef _MACHINE_PC_DISPLAY_H_
++#define _MACHINE_PC_DISPLAY_H_
++
+ /* Color attributes for foreground text */
+ 
+ #define	FG_BLACK		   0
+@@ -44,3 +46,5 @@
+ /* Monochrome attributes for text background */
+ 
+ #define	BG_INTENSE		0x10
++
++#endif /* !_MACHINE_PC_DISPLAY_H_ */
+diff --git a/sys/sys/cons.h b/sys/sys/cons.h
+index 4b7452e..18c258d 100644
+--- a/sys/sys/cons.h
++++ b/sys/sys/cons.h
+@@ -33,11 +33,10 @@
+  *
+  *	from: @(#)cons.h	7.2 (Berkeley) 5/9/91
+  * $FreeBSD: src/sys/sys/cons.h,v 1.24 2000/01/11 14:54:01 yokota Exp $
+- * $DragonFly: src/sys/sys/cons.h,v 1.7 2007/05/07 05:21:42 dillon Exp $
+  */
+ 
+-#ifndef _MACHINE_CONS_H_
+-#define	_MACHINE_CONS_H_
++#ifndef _SYS_CONS_H_
++#define _SYS_CONS_H_
+ 
+ #ifndef _SYS_TYPES_H_
+ #include <sys/types.h>
+@@ -112,4 +111,4 @@ void	cnpoll (int);
+ 
+ #endif /* _KERNEL */
+ 
+-#endif /* !_MACHINE_CONS_H_ */
++#endif /* !_SYS_CONS_H_ */
+diff --git a/sys/sys/mouse.h b/sys/sys/mouse.h
+index 076c7c9..6e18be3 100644
+--- a/sys/sys/mouse.h
++++ b/sys/sys/mouse.h
+@@ -23,8 +23,8 @@
+  * $FreeBSD: src/sys/i386/include/mouse.h,v 1.15.2.2 2002/04/15 00:52:08 will Exp $
+  */
+ 
+-#ifndef _MACHINE_MOUSE_H_
+-#define _MACHINE_MOUSE_H_
++#ifndef _SYS_MOUSE_H_
++#define _SYS_MOUSE_H_
+ 
+ #include <sys/types.h>
+ #include <sys/ioccom.h>
+@@ -358,4 +358,4 @@ typedef struct mousevar {
+ /* Mouse remote socket */
+ #define _PATH_MOUSEREMOTE	"/var/run/MouseRemote"
+ 
+-#endif /* _MACHINE_MOUSE_H_ */
++#endif /* !_SYS_MOUSE_H_ */
+diff --git a/sys/sys/thread.h b/sys/sys/thread.h
+index 55f4be0..2258753 100644
+--- a/sys/sys/thread.h
++++ b/sys/sys/thread.h
+@@ -69,7 +69,7 @@ typedef TAILQ_HEAD(lwkt_queue, thread) lwkt_queue;
+  * kernel nor the user version.
+  */
+ #if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
+-#ifndef _MACHINE_FRAME_H_
++#ifndef _CPU_FRAME_H_
+ #include <machine/frame.h>
+ #endif
+ #else
+diff --git a/sys/vm/vm_object.h b/sys/vm/vm_object.h
+index 66d0ed0..b69170e 100644
+--- a/sys/vm/vm_object.h
++++ b/sys/vm/vm_object.h
+@@ -85,7 +85,7 @@
+ #ifndef _MACHINE_PMAP_H_
+ #include <machine/pmap.h>
+ #endif
+-#ifndef _MACHINE_ATOMIC_H_
++#ifndef _CPU_ATOMIC_H_
+ #include <machine/atomic.h>
+ #endif
+ #ifndef _VM_VM_H_
+-- 
+2.7.2
+

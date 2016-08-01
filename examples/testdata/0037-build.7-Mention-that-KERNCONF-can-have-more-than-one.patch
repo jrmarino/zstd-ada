@@ -1,0 +1,35 @@
+From b7e34bd670ab34267b583adb4b7e0f669d7ba9ea Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Fri, 22 Jul 2016 21:17:54 +0200
+Subject: [PATCH 037/100] build.7: Mention that KERNCONF can have more than one
+ config.
+
+---
+ share/man/man7/build.7 | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/share/man/man7/build.7 b/share/man/man7/build.7
+index 906681f..cfbb788 100644
+--- a/share/man/man7/build.7
++++ b/share/man/man7/build.7
+@@ -24,7 +24,7 @@
+ .\"
+ .\" $FreeBSD: src/share/man/man7/build.7,v 1.19.2.1 2002/03/18 08:33:02 murray Exp $
+ .\"
+-.Dd June 20, 2015
++.Dd July 22, 2016
+ .Dt BUILD 7
+ .Os
+ .Sh NAME
+@@ -202,7 +202,7 @@ Used to override the path of
+ (the default is
+ .Pa /etc/make.conf ) .
+ .It Ev KERNCONF
+-The name of the kernel configuration file from which the kernel should
++The name of one or more kernel configurations from which kernels should
+ be built (the default is
+ .Li X86_64_GENERIC ) .
+ .It Ev KERNCONFDIR
+-- 
+2.7.2
+

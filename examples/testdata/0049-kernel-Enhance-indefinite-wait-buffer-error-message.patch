@@ -1,0 +1,27 @@
+From 3e169fa5bb4c11d3dde9dc56b57a1176c61c5e8c Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sat, 23 Jul 2016 19:06:42 -0700
+Subject: [PATCH 049/100] kernel - Enhance indefinite wait buffer error message
+
+* Enhance the error message re: indefinite wait buffer notifications.
+---
+ sys/vm/swap_pager.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/sys/vm/swap_pager.c b/sys/vm/swap_pager.c
+index 32e6019..3ca1eeb 100644
+--- a/sys/vm/swap_pager.c
++++ b/sys/vm/swap_pager.c
+@@ -1431,7 +1431,8 @@ swap_pager_getpage(vm_object_t object, vm_page_t *mpp, int seqaccess)
+ 		if (tsleep(mreq, PINTERLOCKED, "swread", hz*20)) {
+ 			kprintf(
+ 			    "swap_pager: indefinite wait buffer: "
+-				" offset: %lld, size: %ld\n",
++				" bp %p offset: %lld, size: %ld\n",
++			    bp,
+ 			    (long long)bio->bio_offset,
+ 			    (long)bp->b_bcount
+ 			);
+-- 
+2.7.2
+

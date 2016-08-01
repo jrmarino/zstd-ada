@@ -1,0 +1,566 @@
+From e32d324453609358a4f48c324b3216c69a6c5c4b Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Tue, 19 Jul 2016 17:14:33 -0700
+Subject: [PATCH 014/100] kernel - Fix Xinvltlb issue, fix ipiq issue, add
+ Xsniff
+
+* The Xinvltlb IPI interrupt enables interrupts in smp_inval_intr(), which
+  allows potentially pending interrupts and other things to happen.  We
+  must use doreti instead of doreti_iret.
+
+* Fix a reentrancy issue with lwkt_ipiq.  Reentrancy can occur when the ipi
+  callback itself needs to issue an IPI, but the target cpu FIFO is full.
+  When this happens, the cpu mask may not be correct so force a scan of all
+  cpus in this situation.
+
+* Add an infinite loop detection test to lwkt_process_ipiq() and jigger
+  another IPI if it persists more than 10 seconds, hopefully recovering the
+  system if as-yet unknown IPI issues persist.
+
+* Add the Xsniff IPI and augment systat -pv to use it.  This sniffs the %rip
+  and %rpc on all cpus, allowing us to see where where the kernel spends its
+  time.
+---
+ sys/cpu/x86_64/include/cpufunc.h             |   1 +
+ sys/kern/kern_clock.c                        |   7 +-
+ sys/kern/lwkt_ipiq.c                         | 104 +++++++++++++++++++++------
+ sys/kern/lwkt_thread.c                       |   1 -
+ sys/platform/pc64/apic/apic_vector.s         |  20 ++++++
+ sys/platform/pc64/apic/lapic.c               |   4 ++
+ sys/platform/pc64/include/intr_machdep.h     |  10 ++-
+ sys/platform/pc64/x86_64/genassym.c          |   1 +
+ sys/platform/pc64/x86_64/global.s            |   2 +
+ sys/platform/pc64/x86_64/mp_machdep.c        |  17 ++++-
+ sys/platform/vkernel64/platform/pmap_inval.c |   6 ++
+ sys/sys/globaldata.h                         |   3 +-
+ sys/sys/kinfo.h                              |   4 +-
+ usr.bin/systat/symbols.c                     |   4 +-
+ usr.bin/systat/vmmeter.c                     |  24 ++++---
+ 15 files changed, 164 insertions(+), 44 deletions(-)
+
+diff --git a/sys/cpu/x86_64/include/cpufunc.h b/sys/cpu/x86_64/include/cpufunc.h
+index 3dedf9c..0d1e9a0 100644
+--- a/sys/cpu/x86_64/include/cpufunc.h
++++ b/sys/cpu/x86_64/include/cpufunc.h
+@@ -686,6 +686,7 @@ cpu_invltlb(void)
+ #endif
+ 
+ extern void smp_invltlb(void);
++extern void smp_sniff(void);
+ 
+ static __inline u_short
+ rfs(void)
+diff --git a/sys/kern/kern_clock.c b/sys/kern/kern_clock.c
+index e5f91b9..ccc1874 100644
+--- a/sys/kern/kern_clock.c
++++ b/sys/kern/kern_clock.c
+@@ -133,11 +133,16 @@ sysctl_cputime(SYSCTL_HANDLER_ARGS)
+ {
+ 	int cpu, error = 0;
+ 	size_t size = sizeof(struct kinfo_cputime);
++	struct kinfo_cputime tmp;
+ 
+ 	for (cpu = 0; cpu < ncpus; ++cpu) {
+-		if ((error = SYSCTL_OUT(req, &cputime_percpu[cpu], size)))
++		tmp = cputime_percpu[cpu];
++		tmp.cp_sample_pc = (int64_t)globaldata_find(cpu)->gd_sample_pc;
++		tmp.cp_sample_sp = (int64_t)globaldata_find(cpu)->gd_sample_sp;
++		if ((error = SYSCTL_OUT(req, &tmp, size)) != 0)
+ 			break;
+ 	}
++	smp_sniff();
+ 
+ 	return (error);
+ }
+diff --git a/sys/kern/lwkt_ipiq.c b/sys/kern/lwkt_ipiq.c
+index eda7475..544292f 100644
+--- a/sys/kern/lwkt_ipiq.c
++++ b/sys/kern/lwkt_ipiq.c
+@@ -187,9 +187,6 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+ {
+     lwkt_ipiq_t ip;
+     int windex;
+-#ifdef _KERNEL_VIRTUAL
+-    int repeating = 0;
+-#endif
+     struct globaldata *gd = mycpu;
+ 
+     logipiq(send_norm, func, arg1, arg2, gd, target);
+@@ -223,21 +220,50 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+ #else
+ #error "no read_*flags"
+ #endif
++#ifndef _KERNEL_VIRTUAL
++	uint64_t tsc_base = rdtsc();
++#endif
++	int repeating = 0;
+ 
+ 	cpu_enable_intr();
+ 	++ipiq_stat(gd).ipiq_fifofull;
+ 	DEBUG_PUSH_INFO("send_ipiq3");
+ 	while (ip->ip_windex - ip->ip_rindex > MAXCPUFIFO / 4) {
+-	    if (atomic_poll_acquire_int(&target->gd_npoll)) {
++#if 0
++	    if (atomic_swap_int(&target->gd_npoll, 1) == 0) {
+ 		logipiq(cpu_send, func, arg1, arg2, gd, target);
+ 		cpu_send_ipiq(target->gd_cpuid);
+ 	    }
++#endif
+ 	    KKASSERT(ip->ip_windex - ip->ip_rindex != MAXCPUFIFO - 1);
+ 	    lwkt_process_ipiq();
+ 	    cpu_pause();
++
++	    /*
++	     * Check for target not draining issue.  This should be fixed but
++	     * leave the code in-place anyway as it can recover an otherwise
++	     * dead system.
++	     */
+ #ifdef _KERNEL_VIRTUAL
+ 	    if (repeating++ > 10)
+ 		    pthread_yield();
++#else
++	    if (rdtsc() - tsc_base > tsc_frequency) {
++		++repeating;
++		if (repeating > 10) {
++			smp_sniff();
++			ATOMIC_CPUMASK_ORBIT(target->gd_ipimask, gd->gd_cpuid);
++			cpu_send_ipiq(target->gd_cpuid);
++			kprintf("send_ipiq %d->%d tgt not draining (%d) sniff=%p,%p\n",
++				gd->gd_cpuid, target->gd_cpuid, repeating,
++				target->gd_sample_pc, target->gd_sample_sp);
++		} else {
++			smp_sniff();
++			kprintf("send_ipiq %d->%d tgt not draining (%d)\n",
++				gd->gd_cpuid, target->gd_cpuid, repeating);
++		}
++		tsc_base = rdtsc();
++	    }
+ #endif
+ 	}
+ 	DEBUG_POP_INFO();
+@@ -262,7 +288,7 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+     /*
+      * signal the target cpu that there is work pending.
+      */
+-    if (atomic_poll_acquire_int(&target->gd_npoll)) {
++    if (atomic_swap_int(&target->gd_npoll, 1) == 0) {
+ 	logipiq(cpu_send, func, arg1, arg2, gd, target);
+ 	cpu_send_ipiq(target->gd_cpuid);
+     } else {
+@@ -292,9 +318,6 @@ lwkt_send_ipiq3_passive(globaldata_t target, ipifunc3_t func,
+ {
+     lwkt_ipiq_t ip;
+     int windex;
+-#ifdef _KERNEL_VIRTUAL
+-    int repeating = 0;
+-#endif
+     struct globaldata *gd = mycpu;
+ 
+     KKASSERT(target != gd);
+@@ -320,21 +343,50 @@ lwkt_send_ipiq3_passive(globaldata_t target, ipifunc3_t func,
+ #else
+ #error "no read_*flags"
+ #endif
++#ifndef _KERNEL_VIRTUAL
++	uint64_t tsc_base = rdtsc();
++#endif
++	int repeating = 0;
+ 
+ 	cpu_enable_intr();
+ 	++ipiq_stat(gd).ipiq_fifofull;
+ 	DEBUG_PUSH_INFO("send_ipiq3_passive");
+ 	while (ip->ip_windex - ip->ip_rindex > MAXCPUFIFO / 4) {
+-	    if (atomic_poll_acquire_int(&target->gd_npoll)) {
++#if 0
++	    if (atomic_swap_int(&target->gd_npoll, 1) == 0) {
+ 		logipiq(cpu_send, func, arg1, arg2, gd, target);
+ 		cpu_send_ipiq(target->gd_cpuid);
+ 	    }
++#endif
+ 	    KKASSERT(ip->ip_windex - ip->ip_rindex != MAXCPUFIFO - 1);
+ 	    lwkt_process_ipiq();
+ 	    cpu_pause();
++
++	    /*
++	     * Check for target not draining issue.  This should be fixed but
++	     * leave the code in-place anyway as it can recover an otherwise
++	     * dead system.
++	     */
+ #ifdef _KERNEL_VIRTUAL
+ 	    if (repeating++ > 10)
+ 		    pthread_yield();
++#else
++	    if (rdtsc() - tsc_base > tsc_frequency) {
++		++repeating;
++		if (repeating > 10) {
++			smp_sniff();
++			ATOMIC_CPUMASK_ORBIT(target->gd_ipimask, gd->gd_cpuid);
++			cpu_send_ipiq(target->gd_cpuid);
++			kprintf("send_ipiq %d->%d tgt not draining (%d) sniff=%p,%p\n",
++				gd->gd_cpuid, target->gd_cpuid, repeating,
++				target->gd_sample_pc, target->gd_sample_sp);
++		} else {
++			smp_sniff();
++			kprintf("send_ipiq %d->%d tgt not draining (%d)\n",
++				gd->gd_cpuid, target->gd_cpuid, repeating);
++		}
++		tsc_base = rdtsc();
++	    }
+ #endif
+ 	}
+ 	DEBUG_POP_INFO();
+@@ -410,7 +462,7 @@ lwkt_send_ipiq3_nowait(globaldata_t target, ipifunc3_t func,
+     /*
+      * This isn't a passive IPI, we still have to signal the target cpu.
+      */
+-    if (atomic_poll_acquire_int(&target->gd_npoll)) {
++    if (atomic_swap_int(&target->gd_npoll, 1) == 0) {
+ 	logipiq(cpu_send, func, arg1, arg2, gd, target);
+ 	cpu_send_ipiq(target->gd_cpuid);
+     } else {
+@@ -559,10 +611,16 @@ lwkt_process_ipiq(void)
+     cpumask_t mask;
+     int n;
+ 
+-    ++gd->gd_processing_ipiq;
++    /*
++     * We must process the entire cpumask if we are reentrant because it might
++     * have been partially cleared.
++     */
++    if (++gd->gd_processing_ipiq > 1)
++	ATOMIC_CPUMASK_COPY(gd->gd_ipimask, smp_active_mask);
+ again:
+-    cpu_lfence();
++    atomic_swap_int(&gd->gd_npoll, 0);
+     mask = gd->gd_ipimask;
++    cpu_ccfence();
+     ATOMIC_CPUMASK_NANDMASK(gd->gd_ipimask, mask);
+     while (CPUMASK_TESTNZERO(mask)) {
+ 	n = BSFCPUMASK(mask);
+@@ -592,11 +650,7 @@ again:
+      * Interlock to allow more IPI interrupts.  Recheck ipimask after
+      * releasing gd_npoll.
+      */
+-    if (CPUMASK_TESTNZERO(gd->gd_ipimask))
+-	goto again;
+-    atomic_poll_release_int(&gd->gd_npoll);
+-    cpu_mfence();
+-    if (CPUMASK_TESTNZERO(gd->gd_ipimask))
++    if (atomic_swap_int(&gd->gd_npoll, 0))
+ 	goto again;
+     --gd->gd_processing_ipiq;
+ }
+@@ -610,9 +664,16 @@ lwkt_process_ipiq_frame(struct intrframe *frame)
+     cpumask_t mask;
+     int n;
+ 
++    /*
++     * We must process the entire cpumask if we are reentrant because it might
++     * have been partially cleared.
++     */
++    if (++gd->gd_processing_ipiq > 1)
++	ATOMIC_CPUMASK_COPY(gd->gd_ipimask, smp_active_mask);
+ again:
+-    cpu_lfence();
++    atomic_swap_int(&gd->gd_npoll, 0);
+     mask = gd->gd_ipimask;
++    cpu_ccfence();
+     ATOMIC_CPUMASK_NANDMASK(gd->gd_ipimask, mask);
+     while (CPUMASK_TESTNZERO(mask)) {
+ 	n = BSFCPUMASK(mask);
+@@ -638,12 +699,9 @@ again:
+      * Interlock to allow more IPI interrupts.  Recheck ipimask after
+      * releasing gd_npoll.
+      */
+-    if (CPUMASK_TESTNZERO(gd->gd_ipimask))
+-	goto again;
+-    atomic_poll_release_int(&gd->gd_npoll);
+-    cpu_mfence();
+-    if (CPUMASK_TESTNZERO(gd->gd_ipimask))
++    if (atomic_swap_int(&gd->gd_npoll, 0))
+ 	goto again;
++    --gd->gd_processing_ipiq;
+ }
+ 
+ #if 0
+diff --git a/sys/kern/lwkt_thread.c b/sys/kern/lwkt_thread.c
+index 50b9b37..0410b7d 100644
+--- a/sys/kern/lwkt_thread.c
++++ b/sys/kern/lwkt_thread.c
+@@ -711,7 +711,6 @@ lwkt_switch(void)
+     if (gd->gd_trap_nesting_level == 0 && panicstr == NULL)
+ 	ASSERT_NO_TOKENS_HELD(ntd);
+     cpu_time.cp_msg[0] = 0;
+-    cpu_time.cp_stallpc = 0;
+     goto haveidle;
+ 
+ havethread:
+diff --git a/sys/platform/pc64/apic/apic_vector.s b/sys/platform/pc64/apic/apic_vector.s
+index 3abaaf8..b89f049 100644
+--- a/sys/platform/pc64/apic/apic_vector.s
++++ b/sys/platform/pc64/apic/apic_vector.s
+@@ -197,6 +197,26 @@ Xinvltlb:
+ 	call	smp_inval_intr
+ 	addq	$8,%rsp			/* turn into trapframe */
+ 	MEXITCOUNT
++	/*APIC_POP_FRAME*/
++	jmp	doreti			/* doreti b/c intrs enabled */
++
++/*
++ * Handle sniffs - sniff %rip and %rsp.
++ */
++	.text
++	SUPERALIGN_TEXT
++	.globl	Xsniff
++Xsniff:
++	APIC_PUSH_FRAME
++	movq	lapic, %rax
++	movl	$0, LA_EOI(%rax)	/* End Of Interrupt to APIC */
++	FAKE_MCOUNT(TF_RIP(%rsp))
++	incl    PCPU(cnt) + V_IPI
++	movq	TF_RIP(%rsp),%rax
++	movq	%rax,PCPU(sample_pc)
++	movq	TF_RSP(%rsp),%rax
++	movq	%rax,PCPU(sample_sp)
++	MEXITCOUNT
+ 	APIC_POP_FRAME
+ 	jmp	doreti_iret
+ 
+diff --git a/sys/platform/pc64/apic/lapic.c b/sys/platform/pc64/apic/lapic.c
+index 51cd36f..b7697a9 100644
+--- a/sys/platform/pc64/apic/lapic.c
++++ b/sys/platform/pc64/apic/lapic.c
+@@ -164,6 +164,10 @@ lapic_init(boolean_t bsp)
+ 		/* Install an inter-CPU IPI for CPU stop/restart */
+ 		setidt_global(XCPUSTOP_OFFSET, Xcpustop,
+ 		    SDT_SYSIGT, SEL_KPL, 0);
++
++		/* Install an inter-CPU IPI for TLB invalidation */
++		setidt_global(XSNIFF_OFFSET, Xsniff,
++		    SDT_SYSIGT, SEL_KPL, 0);
+ 	}
+ 
+ 	/*
+diff --git a/sys/platform/pc64/include/intr_machdep.h b/sys/platform/pc64/include/intr_machdep.h
+index 4224aa0..132ee87 100644
+--- a/sys/platform/pc64/include/intr_machdep.h
++++ b/sys/platform/pc64/include/intr_machdep.h
+@@ -57,7 +57,7 @@
+  *	0xff (255) +-------------+
+  *		   |             | 15 (IPIs: Xcpustop, Xspuriousint)
+  *	0xf0 (240) +-------------+
+- *		   |             | 14 (IPIs: Xinvltlb, Xipiq, Xtimer)
++ *		   |             | 14 (IPIs: Xinvltlb, Xipiq, Xtimer, Xsniff)
+  *	0xe0 (224) +-------------+
+  *		   |             | 13
+  *	0xd0 (208) +-------------+
+@@ -111,7 +111,10 @@
+ /* TIMER rendezvous */
+ #define XTIMER_OFFSET		(IDT_OFFSET_IPIG1 + 4)
+ 
+-/* IPI group1 5 ~ 15: unused */
++/* SNIFF rendezvous */
++#define XSNIFF_OFFSET		(IDT_OFFSET_IPIG1 + 5)
++
++/* IPI group1 6 ~ 15: unused */
+ 
+ 
+ /*
+@@ -143,7 +146,8 @@ inthand_t
+ inthand_t
+ 	Xinvltlb,	/* TLB shootdowns */
+ 	Xcpustop,	/* CPU stops & waits for another CPU to restart it */
+-	Xipiq;		/* handle lwkt_send_ipiq() requests */
++	Xipiq,		/* handle lwkt_send_ipiq() requests */
++	Xsniff;		/* sniff CPU */
+ 
+ #endif /* LOCORE */
+ 
+diff --git a/sys/platform/pc64/x86_64/genassym.c b/sys/platform/pc64/x86_64/genassym.c
+index 77494c5..47274df 100644
+--- a/sys/platform/pc64/x86_64/genassym.c
++++ b/sys/platform/pc64/x86_64/genassym.c
+@@ -109,6 +109,7 @@ ASSYM(GD_CNT, offsetof(struct mdglobaldata, mi.gd_cnt));
+ ASSYM(GD_CPUID, offsetof(struct mdglobaldata, mi.gd_cpuid));
+ ASSYM(GD_CPUMASK, offsetof(struct mdglobaldata, mi.gd_cpumask));
+ ASSYM(GD_SAMPLE_PC, offsetof(struct mdglobaldata, mi.gd_sample_pc));
++ASSYM(GD_SAMPLE_SP, offsetof(struct mdglobaldata, mi.gd_sample_sp));
+ 
+ ASSYM(PCB_CR3, offsetof(struct pcb, pcb_cr3));
+ ASSYM(PCB_R15, offsetof(struct pcb, pcb_r15));
+diff --git a/sys/platform/pc64/x86_64/global.s b/sys/platform/pc64/x86_64/global.s
+index 4cd9d07..383977c 100644
+--- a/sys/platform/pc64/x86_64/global.s
++++ b/sys/platform/pc64/x86_64/global.s
+@@ -77,6 +77,7 @@
+ 	.globl	gd_scratch_rsp
+ 	.globl	gd_user_fs, gd_user_gs
+ 	.globl	gd_sample_pc
++	.globl	gd_sample_sp
+ 
+ 	.set    gd_cpuid,globaldata + GD_CPUID
+ 	.set    gd_cpumask,globaldata + GD_CPUMASK
+@@ -91,4 +92,5 @@
+ 	.set	gd_user_fs,globaldata + GD_USER_FS
+ 	.set	gd_user_gs,globaldata + GD_USER_GS
+ 	.set	gd_sample_pc,globaldata + GD_SAMPLE_PC
++	.set	gd_sample_sp,globaldata + GD_SAMPLE_SP
+ 
+diff --git a/sys/platform/pc64/x86_64/mp_machdep.c b/sys/platform/pc64/x86_64/mp_machdep.c
+index de88102..dbfff8a 100644
+--- a/sys/platform/pc64/x86_64/mp_machdep.c
++++ b/sys/platform/pc64/x86_64/mp_machdep.c
+@@ -956,10 +956,14 @@ smp_invltlb(void)
+ #ifdef LOOPMASK
+ 		if (++loops == 1000000) {
+ 			kprintf("smp_invltlb: waited too long\n");
+-			loops = 0;
+ 			mdcpu->gd_xinvaltlb = 0;
+ 			smp_invlpg(&smp_active_mask);
+ 		}
++		if (++loops == 2000000) {
++			kprintf("smp_invltlb: giving up\n");
++			loops = 0;
++			CPUMASK_ASSZERO(smp_invltlb_mask);
++		}
+ #endif
+ 	}
+ 	write_rflags(rflags);
+@@ -1031,6 +1035,17 @@ smp_invlpg(cpumask_t *cmdmask)
+ 	crit_exit_gd(&md->mi);
+ }
+ 
++void
++smp_sniff(void)
++{
++	globaldata_t gd = mycpu;
++	int dummy;
++
++	all_but_self_ipi(XSNIFF_OFFSET);
++	gd->gd_sample_pc = smp_sniff;
++	gd->gd_sample_sp = &dummy;
++}
++
+ /*
+  * Called from Xinvltlb assembly with interrupts hard-disabled.  The
+  * assembly doesn't check for or mess with the critical section count.
+diff --git a/sys/platform/vkernel64/platform/pmap_inval.c b/sys/platform/vkernel64/platform/pmap_inval.c
+index 85a325c..6dbca22 100644
+--- a/sys/platform/vkernel64/platform/pmap_inval.c
++++ b/sys/platform/vkernel64/platform/pmap_inval.c
+@@ -383,3 +383,9 @@ smp_invltlb(void)
+ 	/* at the moment pmap_inval_pte_quick */
+ 	/* do nothing */
+ }
++
++void
++smp_sniff(void)
++{
++	/* not implemented */
++}
+diff --git a/sys/sys/globaldata.h b/sys/sys/globaldata.h
+index cbe6be3..0752cb7 100644
+--- a/sys/sys/globaldata.h
++++ b/sys/sys/globaldata.h
+@@ -174,7 +174,8 @@ struct globaldata {
+ 	void		*gd_sample_pc;		/* sample program ctr/tr */
+ 	void		*gd_reserved_pcpu_mmap; /* future */
+ 	uint64_t	gd_forkid;		/* per-cpu unique inc ncpus */
+-	uint64_t	gd_reserved64[4];
++	void		*gd_sample_sp;		/* sample stack pointer */
++	uint64_t	gd_reserved64[3];
+ 	void		*gd_preserved[4];	/* future fields */
+ 	/* extended by <machine/globaldata.h> */
+ };
+diff --git a/sys/sys/kinfo.h b/sys/sys/kinfo.h
+index 5bb82e5..67cb832 100644
+--- a/sys/sys/kinfo.h
++++ b/sys/sys/kinfo.h
+@@ -74,8 +74,8 @@ struct kinfo_cputime {
+ 	uint64_t	cp_idle;
+ 	uint64_t	cp_unused01;
+ 	uint64_t	cp_unused02;
+-	uint64_t	cp_unused03;
+-	uint64_t	cp_stallpc;	/* code stall address */
++	uint64_t	cp_sample_pc;
++	uint64_t	cp_sample_sp;
+ 	char		cp_msg[32];	/* code stall token or mplock */
+ };
+ 
+diff --git a/usr.bin/systat/symbols.c b/usr.bin/systat/symbols.c
+index 3f821ba..346bf7d 100644
+--- a/usr.bin/systat/symbols.c
++++ b/usr.bin/systat/symbols.c
+@@ -60,8 +60,8 @@ struct symdata {
+ 
+ static TAILQ_HEAD(symlist, symdata) symlist;
+ static struct symdata *symcache;
+-static char *symbegin;
+-static char *symend;
++static char *symbegin = (void *)(intptr_t)0;
++static char *symend = (void *)(intptr_t)-1;
+ 
+ void
+ read_symbols(const char *file)
+diff --git a/usr.bin/systat/vmmeter.c b/usr.bin/systat/vmmeter.c
+index 046177c..21f080d 100644
+--- a/usr.bin/systat/vmmeter.c
++++ b/usr.bin/systat/vmmeter.c
+@@ -37,9 +37,7 @@ static int vmm_fetched;
+ static struct vmmeter vmm_totcur, vmm_totprev;
+ static struct vmmeter *vmm_cur, *vmm_prev;
+ static struct kinfo_cputime *vmm_cptime_cur, *vmm_cptime_prev;
+-#if 0
+ static struct save_ctx symctx;
+-#endif
+ static int symbols_read;
+ 
+ static void
+@@ -106,6 +104,10 @@ showvmm(void)
+ 	else
+ 		DRAW_ROW(n, TOT_START, 8, "%*u", DTOT( v_lock_colls));
+ 	DRAW_ROW2(n, TOT_START, 18, "%*.*s", ""); /* label */
++	DRAW_ROW2(n, TOT_START, 30, "%*.*s", ""); /* sample_pc */
++#if 0
++	DRAW_ROW2(n, TOT_START, 20, "%*.*s", ""); /* sample_sp */
++#endif
+ 
+ #undef DTOT
+ 
+@@ -169,16 +171,14 @@ do { \
+ #undef CPUV
+ #undef CPUD
+ 
+-#if 0
+ #define CPUC(idx, field) vmm_cptime_cur[idx].cp_##field
+-		n = X_START + CPU_LABEL_W;
+-
+-		DRAW_ROW(n, CPU_STARTX + i, 15, "%-*s", CPUC(i, msg));
+-		DRAW_ROW(n, CPU_STARTX + i, 35, "%-*s",
+-			address_to_symbol((void *)(intptr_t)CPUC(i, stallpc),
+-					  &symctx));
+-#undef CPUC
++		DRAW_ROW2(n, CPU_START + i, 30, "%*.*s",
++			 address_to_symbol((void *)(intptr_t)CPUC(i, sample_pc),
++					   &symctx));
++#if 0
++		DRAW_ROW(n, CPU_START + i, 19, " %016jx", CPUC(i, sample_sp));
+ #endif
++#undef CPUC
+ 	}
+ }
+ 
+@@ -213,6 +213,10 @@ labelvmm(void)
+ 	DRAW_ROW(n, TOT_START - 1, 6, "%*s", "idle%");
+ 	DRAW_ROW(n, TOT_START - 1, 8, "%*s", "smpcol");
+ 	DRAW_ROW(n, TOT_START - 1, 18, "%*s", "label");
++	DRAW_ROW(n, TOT_START - 1, 30, "%*s", "sample_pc");
++#if 0
++	DRAW_ROW(n, TOT_START - 1, 18, "%*s", "sample_sp");
++#endif
+ 
+ 	mvprintw(TOT_START, X_START, "total");
+ 	for (i = 0; i < vmm_ncpus; ++i)
+-- 
+2.7.2
+

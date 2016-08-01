@@ -1,0 +1,525 @@
+From e47e3dba268d93966c871dfaa6cbbca79038d5bb Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Fri, 22 Jul 2016 18:22:17 -0700
+Subject: [PATCH 038/100] kernel - Fix excessive ipiq recursion (3)
+
+* Third try.  I'm not quite sure why we are still getting hard locks.  These
+  changes (so far) appear to fix the problem, but I don't know why.  It
+  is quite possible that the problem is still not fixed.
+
+* Setting target->gd_npoll will prevent *all* other cpus from sending an
+  IPI to that target.  This should have been ok because we were in a
+  critical section and about to send the IPI to the target ourselves, after
+  setting gd_npoll.  The critical section does not prevent Xinvltlb, Xsniff,
+  Xspuriousint, or Xcpustop from running, but of these only Xinvltlb does
+  anything significant and it should theoretically run at a higher level
+  on all cpus than Xipiq (and thus complete without causing a deadlock of
+  any sort).
+
+  So in short, it should have been ok to allow something like an Xinvltlb
+  to interrupt the cpu inbetween setting target->gd_npoll and actually
+  sending the Xipiq to the target.  But apparently it is not ok.
+
+* Only clear mycpu->gd_npoll when we either (1) EOI and take the IPIQ
+  interrupt or (2) If the IPIQ is made pending via reqflags, when we clear
+  the flag.  Previously we were clearing gd_npoll in the IPI processing
+  loop itself, potentially racing new incoming interrupts before they get
+  EOId by our cpu.  This also should have been just fine, because interrupts
+  are enabled in the processing loop so nothing should have been able to
+  back-up in the LAPIC.
+
+  I can conjecture that possibly there was a race when we cleared gd_npoll
+  multiple times, potentially clearing it the second (or later) times,
+  allowing multiple incoming IPIs to be queued from multiple cpu sources but
+  then cli'ing and entering a e.g. Xinvltlb processing loop before our cpu
+  could acknowledge any of them.  And then, possibly, trying to issue an IPI
+  with the system in this state.
+
+  I don't really see how this can cause a hard lock because I did not observe
+  any loop/counter error messages on the console which should have been
+  triggered if other cpus got stuck trying to issue IPIs.  But LAPIC IPI
+  interactions are not well documented so... perhaps they were being issued
+  but blocked our local LAPIC from accepting a Xinvltlb due to having one
+  extra unacknowledged Xipiq pending?  But then, our Xinvltlb processing loop
+  *does* enable interrupts for the duration, so it should have drained if
+  this were so.
+
+  In anycase, we no longer gratuitously clear gd_npoll in the processing
+  loop.  We only clear it when we know there isn't one in-flight heading to
+  our cpu and none queued on our cpu.  What will happen now is that a second
+  IPI can be sent to us once we've EOI'd the first one, and wind up in
+  reqflags, but will not be acted upon until our current processing loop
+  returns.
+
+  I will note that the gratuitous clearing we did before *could* have allowed
+  substantially all other cpus to try to Xipiq us at nearly the same time,
+  so perhaps the deadlock was related to that type of situation.
+
+* When queueing an ipiq command from mycpu to a target, interrupts were
+  enabled between our entry into the ipiq fifo, the setting of our cpu bit
+  in the target gd_ipimask, the setting of target->gd_npoll, and our
+  issuing of the actual IPI to the target.  We now disable interrupts across
+  these four steps.
+
+  It should have been ok for interrupts to have been left enabled across
+  these four steps.  It might still be, but I am not taking any chances now.
+---
+ sys/kern/lwkt_ipiq.c                       | 120 ++++++-----------------------
+ sys/platform/pc64/apic/apic_vector.s       |   2 +
+ sys/platform/pc64/x86_64/genassym.c        |   1 +
+ sys/platform/pc64/x86_64/global.s          |   2 +
+ sys/platform/pc64/x86_64/ipl.s             |   4 +
+ sys/platform/pc64/x86_64/mp_machdep.c      |  32 +++-----
+ sys/platform/vkernel64/platform/machintr.c |   1 +
+ sys/platform/vkernel64/x86_64/exception.c  |   1 +
+ sys/sys/thread.h                           |   3 -
+ sys/sys/thread2.h                          |  13 ----
+ 10 files changed, 44 insertions(+), 135 deletions(-)
+
+diff --git a/sys/kern/lwkt_ipiq.c b/sys/kern/lwkt_ipiq.c
+index 169bc11..ed8ec4c 100644
+--- a/sys/kern/lwkt_ipiq.c
++++ b/sys/kern/lwkt_ipiq.c
+@@ -190,6 +190,7 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+     int windex;
+     int level1;
+     int level2;
++    long rflags;
+     struct globaldata *gd = mycpu;
+ 
+     logipiq(send_norm, func, arg1, arg2, gd, target);
+@@ -235,17 +236,13 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+     }
+ 
+     if (ip->ip_windex - ip->ip_rindex > level1) {
+-#if defined(__x86_64__)
+-	unsigned long rflags = read_rflags();
+-#else
+-#error "no read_*flags"
+-#endif
+ #ifndef _KERNEL_VIRTUAL
+ 	uint64_t tsc_base = rdtsc();
+ #endif
+ 	int repeating = 0;
+ 	int olimit;
+ 
++	rflags = read_rflags();
+ 	cpu_enable_intr();
+ 	++ipiq_stat(gd).ipiq_fifofull;
+ 	DEBUG_PUSH_INFO("send_ipiq3");
+@@ -267,16 +264,16 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+ 	    if (rdtsc() - tsc_base > tsc_frequency) {
+ 		++repeating;
+ 		if (repeating > 10) {
+-			smp_sniff();
+-			ATOMIC_CPUMASK_ORBIT(target->gd_ipimask, gd->gd_cpuid);
+-			cpu_send_ipiq(target->gd_cpuid);
+ 			kprintf("send_ipiq %d->%d tgt not draining (%d) sniff=%p,%p\n",
+ 				gd->gd_cpuid, target->gd_cpuid, repeating,
+ 				target->gd_sample_pc, target->gd_sample_sp);
+-		} else {
+ 			smp_sniff();
++			ATOMIC_CPUMASK_ORBIT(target->gd_ipimask, gd->gd_cpuid);
++			cpu_send_ipiq(target->gd_cpuid);
++		} else {
+ 			kprintf("send_ipiq %d->%d tgt not draining (%d)\n",
+ 				gd->gd_cpuid, target->gd_cpuid, repeating);
++			smp_sniff();
+ 		}
+ 		tsc_base = rdtsc();
+ 	    }
+@@ -292,8 +289,18 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+     }
+ 
+     /*
+-     * Queue the new message
++     * Queue the new message and signal the target cpu.  For now we need to
++     * physically disable interrupts because the target will not get signalled
++     * by other cpus once we set target->gd_npoll and we don't want to get
++     * interrupted.
++     *
++     * XXX not sure why this is a problem, the critical section should prevent
++     *     any stalls (incoming interrupts except Xinvltlb and Xsnoop will
++     *	   just be made pending).
+      */
++    rflags = read_rflags();
++    cpu_disable_intr();
++
+     windex = ip->ip_windex & MAXCPUFIFO_MASK;
+     ip->ip_info[windex].func = func;
+     ip->ip_info[windex].arg1 = arg1;
+@@ -311,6 +318,8 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+     } else {
+ 	++ipiq_stat(gd).ipiq_avoided;
+     }
++    write_rflags(rflags);
++
+     --gd->gd_intr_nesting_level;
+     crit_exit();
+     logipiq(send_end, func, arg1, arg2, gd, target);
+@@ -385,62 +394,6 @@ lwkt_send_ipiq3_passive(globaldata_t target, ipifunc3_t func,
+ }
+ 
+ /*
+- * Send an IPI request without blocking, return 0 on success, ENOENT on 
+- * failure.  The actual queueing of the hardware IPI may still force us
+- * to spin and process incoming IPIs but that will eventually go away
+- * when we've gotten rid of the other general IPIs.
+- */
+-int
+-lwkt_send_ipiq3_nowait(globaldata_t target, ipifunc3_t func, 
+-		       void *arg1, int arg2)
+-{
+-    lwkt_ipiq_t ip;
+-    int windex;
+-    struct globaldata *gd = mycpu;
+-
+-    logipiq(send_nbio, func, arg1, arg2, gd, target);
+-    KKASSERT(curthread->td_critcount);
+-    if (target == gd) {
+-	func(arg1, arg2, NULL);
+-	logipiq(send_end, func, arg1, arg2, gd, target);
+-	return(0);
+-    } 
+-    crit_enter();
+-    ++gd->gd_intr_nesting_level;
+-    ++ipiq_stat(gd).ipiq_count;
+-    ip = &gd->gd_ipiq[target->gd_cpuid];
+-
+-    if (ip->ip_windex - ip->ip_rindex >= MAXCPUFIFO * 2 / 3) {
+-	logipiq(send_fail, func, arg1, arg2, gd, target);
+-	--gd->gd_intr_nesting_level;
+-	crit_exit();
+-	return(ENOENT);
+-    }
+-    windex = ip->ip_windex & MAXCPUFIFO_MASK;
+-    ip->ip_info[windex].func = func;
+-    ip->ip_info[windex].arg1 = arg1;
+-    ip->ip_info[windex].arg2 = arg2;
+-    cpu_sfence();
+-    ++ip->ip_windex;
+-    ATOMIC_CPUMASK_ORBIT(target->gd_ipimask, gd->gd_cpuid);
+-
+-    /*
+-     * This isn't a passive IPI, we still have to signal the target cpu.
+-     */
+-    if (atomic_swap_int(&target->gd_npoll, 1) == 0) {
+-	logipiq(cpu_send, func, arg1, arg2, gd, target);
+-	cpu_send_ipiq(target->gd_cpuid);
+-    } else {
+-	++ipiq_stat(gd).ipiq_avoided;
+-    }
+-    --gd->gd_intr_nesting_level;
+-    crit_exit();
+-
+-    logipiq(send_end, func, arg1, arg2, gd, target);
+-    return(0);
+-}
+-
+-/*
+  * deprecated, used only by fast int forwarding.
+  */
+ int
+@@ -543,15 +496,6 @@ lwkt_wait_ipiq(globaldata_t target, int seq)
+     }
+ }
+ 
+-int
+-lwkt_seq_ipiq(globaldata_t target)
+-{
+-    lwkt_ipiq_t ip;
+-
+-    ip = &mycpu->gd_ipiq[target->gd_cpuid];
+-    return(ip->ip_windex);
+-}
+-
+ /*
+  * Called from IPI interrupt (like a fast interrupt), which has placed
+  * us in a critical section.  The MP lock may or may not be held.
+@@ -576,13 +520,8 @@ lwkt_process_ipiq(void)
+     cpumask_t mask;
+     int n;
+ 
+-    /*
+-     * We must process the entire cpumask if we are reentrant because it might
+-     * have been partially cleared.
+-     */
+     ++gd->gd_processing_ipiq;
+ again:
+-    atomic_swap_int(&gd->gd_npoll, 0);
+     mask = gd->gd_ipimask;
+     cpu_ccfence();
+     while (CPUMASK_TESTNZERO(mask)) {
+@@ -614,11 +553,8 @@ again:
+     }
+ 
+     /*
+-     * Interlock to allow more IPI interrupts.  Recheck ipimask after
+-     * releasing gd_npoll.
++     * Interlock to allow more IPI interrupts.
+      */
+-    if (atomic_swap_int(&gd->gd_npoll, 0))
+-	goto again;
+     --gd->gd_processing_ipiq;
+ }
+ 
+@@ -631,13 +567,8 @@ lwkt_process_ipiq_frame(struct intrframe *frame)
+     cpumask_t mask;
+     int n;
+ 
+-    /*
+-     * We must process the entire cpumask if we are reentrant because it might
+-     * have been partially cleared.
+-     */
+     ++gd->gd_processing_ipiq;
+ again:
+-    atomic_swap_int(&gd->gd_npoll, 0);
+     mask = gd->gd_ipimask;
+     cpu_ccfence();
+     while (CPUMASK_TESTNZERO(mask)) {
+@@ -663,13 +594,6 @@ again:
+ 	    /* need_ipiq(); do not reflag */
+ 	}
+     }
+-
+-    /*
+-     * Interlock to allow more IPI interrupts.  Recheck ipimask after
+-     * releasing gd_npoll.
+-     */
+-    if (atomic_swap_int(&gd->gd_npoll, 0))
+-	goto again;
+     --gd->gd_processing_ipiq;
+ }
+ 
+@@ -712,6 +636,7 @@ again:
+ 		ip += gd->gd_cpuid;
+ 		if ((limit = ip->ip_drain) != 0) {
+ 		    lwkt_process_ipiq_core(sgd, ip, NULL, limit);
++		    /* no gd_ipimask when doing limited processing */
+ 		}
+ 	    }
+ 	}
+@@ -732,7 +657,8 @@ again:
+ }
+ 
+ /*
+- *
++ * Process incoming IPI requests until only <limit> are left (0 to exhaust
++ * all incoming IPI requests).
+  */
+ static int
+ lwkt_process_ipiq_core(globaldata_t sgd, lwkt_ipiq_t ip, 
+diff --git a/sys/platform/pc64/apic/apic_vector.s b/sys/platform/pc64/apic/apic_vector.s
+index b89f049..c5c9243 100644
+--- a/sys/platform/pc64/apic/apic_vector.s
++++ b/sys/platform/pc64/apic/apic_vector.s
+@@ -345,7 +345,9 @@ Xipiq:
+ 	movq	%rsp,%rdi		/* pass frame by reference */
+ 	incl	PCPU(intr_nesting_level)
+ 	incl	TD_CRITCOUNT(%rbx)
++	subq	%rax,%rax
+ 	sti
++	xchgl	%eax,PCPU(npoll)	/* (atomic op) allow another Xipi */
+ 	call	lwkt_process_ipiq_frame
+ 	decl	TD_CRITCOUNT(%rbx)
+ 	decl	PCPU(intr_nesting_level)
+diff --git a/sys/platform/pc64/x86_64/genassym.c b/sys/platform/pc64/x86_64/genassym.c
+index 47274df..aab5921 100644
+--- a/sys/platform/pc64/x86_64/genassym.c
++++ b/sys/platform/pc64/x86_64/genassym.c
+@@ -108,6 +108,7 @@ ASSYM(GD_CURTHREAD, offsetof(struct mdglobaldata, mi.gd_curthread));
+ ASSYM(GD_CNT, offsetof(struct mdglobaldata, mi.gd_cnt));
+ ASSYM(GD_CPUID, offsetof(struct mdglobaldata, mi.gd_cpuid));
+ ASSYM(GD_CPUMASK, offsetof(struct mdglobaldata, mi.gd_cpumask));
++ASSYM(GD_NPOLL, offsetof(struct mdglobaldata, mi.gd_npoll));
+ ASSYM(GD_SAMPLE_PC, offsetof(struct mdglobaldata, mi.gd_sample_pc));
+ ASSYM(GD_SAMPLE_SP, offsetof(struct mdglobaldata, mi.gd_sample_sp));
+ 
+diff --git a/sys/platform/pc64/x86_64/global.s b/sys/platform/pc64/x86_64/global.s
+index 383977c..6d427c2 100644
+--- a/sys/platform/pc64/x86_64/global.s
++++ b/sys/platform/pc64/x86_64/global.s
+@@ -78,6 +78,7 @@
+ 	.globl	gd_user_fs, gd_user_gs
+ 	.globl	gd_sample_pc
+ 	.globl	gd_sample_sp
++	.globl	gd_npoll
+ 
+ 	.set    gd_cpuid,globaldata + GD_CPUID
+ 	.set    gd_cpumask,globaldata + GD_CPUMASK
+@@ -93,4 +94,5 @@
+ 	.set	gd_user_gs,globaldata + GD_USER_GS
+ 	.set	gd_sample_pc,globaldata + GD_SAMPLE_PC
+ 	.set	gd_sample_sp,globaldata + GD_SAMPLE_SP
++	.set	gd_npoll,globaldata + GD_NPOLL
+ 
+diff --git a/sys/platform/pc64/x86_64/ipl.s b/sys/platform/pc64/x86_64/ipl.s
+index 3198d17..a6d6093 100644
+--- a/sys/platform/pc64/x86_64/ipl.s
++++ b/sys/platform/pc64/x86_64/ipl.s
+@@ -308,7 +308,9 @@ doreti_ipiq:
+ 	movl	%eax,%r12d		/* save cpl (can't use stack) */
+ 	incl	PCPU(intr_nesting_level)
+ 	andl	$~RQF_IPIQ,PCPU(reqflags)
++	subq	%rax,%rax
+ 	sti
++	xchgl	%eax,PCPU(npoll)	/* (atomic op) allow another Xipi */
+ 	subq	$8,%rsp			/* trapframe->intrframe */
+ 	movq	%rsp,%rdi		/* pass frame by ref (C arg) */
+ 	call	lwkt_process_ipiq_frame
+@@ -438,6 +440,8 @@ splz_ipiq:
+ 	andl	$~RQF_IPIQ,PCPU(reqflags)
+ 	sti
+ 	pushq	%rax
++	subq	%rax,%rax
++	xchgl	%eax,PCPU(npoll)	/* (atomic op) allow another Xipi */
+ 	call	lwkt_process_ipiq
+ 	popq	%rax
+ 	jmp	splz_next
+diff --git a/sys/platform/pc64/x86_64/mp_machdep.c b/sys/platform/pc64/x86_64/mp_machdep.c
+index dbfff8a..febfffc 100644
+--- a/sys/platform/pc64/x86_64/mp_machdep.c
++++ b/sys/platform/pc64/x86_64/mp_machdep.c
+@@ -830,7 +830,7 @@ extern cpumask_t smp_idleinvl_reqs;
+ 
+ static __noinline
+ void
+-smp_smurf_fetchset(cpumask_t *mask, int frompg)
++smp_smurf_fetchset(cpumask_t *mask)
+ {
+ 	cpumask_t omask;
+ 	int i;
+@@ -921,7 +921,7 @@ smp_invltlb(void)
+ 	 * NOTE: We are not signalling ourselves, mask already does NOT
+ 	 * include our own cpu.
+ 	 */
+-	smp_smurf_fetchset(&mask, 0);
++	smp_smurf_fetchset(&mask);
+ 
+ 	/*
+ 	 * Issue the IPI.  Note that the XINVLTLB IPI runs regardless of
+@@ -1009,7 +1009,7 @@ smp_invlpg(cpumask_t *cmdmask)
+ 	 */
+ 	rflags = read_rflags();
+ 	cpu_disable_intr();
+-	smp_smurf_fetchset(&mask, 1);
++	smp_smurf_fetchset(&mask);
+ 
+ 	/*
+ 	 * Issue the IPI.  Note that the XINVLTLB IPI runs regardless of
+@@ -1080,6 +1080,11 @@ smp_inval_intr(void)
+ 	 * critical section.  This is necessary to avoid deadlocking
+ 	 * the lapic and to ensure that we execute our commands prior to
+ 	 * any nominal interrupt or preemption.
++	 *
++	 * WARNING! It is very important that we only clear out but in
++	 *	    smp_smurf_mask once for each interrupt we take.  In
++	 *	    this case, we clear it on initial entry and only loop
++	 *	    on the reentrancy detect (caused by another interrupt).
+ 	 */
+ 	cpumask = smp_invmask;
+ 	crit_enter_gd(&md->mi);
+@@ -1121,24 +1126,6 @@ loop:
+ 			 * with potential races.
+ 			 */
+ 			break;
+-#if 0
+-			ATOMIC_CPUMASK_NANDBIT(smp_smurf_mask,
+-						md->mi.gd_cpuid);
+-			cpu_lfence();
+-			if (pmap_inval_intr(&cpumask) == 0)
+-				break;
+-
+-			/*
+-			 * Still looping (race), re-set the smurf bit.  If
+-			 * another race occurred and set it before we could,
+-			 * stop here to avoid deadlocking on the hardware
+-			 * IPI (another IPI will occur).
+-			 */
+-			smp_smurf_fetchset(&md->mi.gd_cpumask XXX
+-			if (CPUMASK_TESTBIT(omask, md->mi.gd_cpuid)) {
+-				break;
+-			}
+-#endif
+ 		}
+ 
+ 		/*
+@@ -1418,8 +1405,9 @@ ap_init(void)
+ 	 * Once the critical section has exited, normal interrupt processing
+ 	 * may occur.
+ 	 */
++	atomic_swap_int(&mycpu->gd_npoll, 0);
+ 	lwkt_process_ipiq();
+-	crit_exit_noyield(mycpu->gd_curthread);
++	crit_exit();
+ 
+ 	/*
+ 	 * Final final, allow the waiting BSP to resume the boot process,
+diff --git a/sys/platform/vkernel64/platform/machintr.c b/sys/platform/vkernel64/platform/machintr.c
+index c13b122..4af763d 100644
+--- a/sys/platform/vkernel64/platform/machintr.c
++++ b/sys/platform/vkernel64/platform/machintr.c
+@@ -129,6 +129,7 @@ splz(void)
+ 		crit_enter_quick(td);
+ 		if (gd->mi.gd_reqflags & RQF_IPIQ) {
+ 			atomic_clear_int(&gd->mi.gd_reqflags, RQF_IPIQ);
++			atomic_swap_int(&gd->mi.gd_npoll, 0);
+ 			lwkt_process_ipiq();
+ 		}
+ 		if (gd->mi.gd_reqflags & RQF_INTPEND) {
+diff --git a/sys/platform/vkernel64/x86_64/exception.c b/sys/platform/vkernel64/x86_64/exception.c
+index ecb0e88..c791f2e 100644
+--- a/sys/platform/vkernel64/x86_64/exception.c
++++ b/sys/platform/vkernel64/x86_64/exception.c
+@@ -80,6 +80,7 @@ ipisig(int nada, siginfo_t *info, void *ctxp)
+ 	if (td->td_critcount == 0) {
+ 		++td->td_critcount;
+ 		++gd->gd_intr_nesting_level;
++		atomic_swap_int(&gd->mi.gd_npoll, 0);
+ 		lwkt_process_ipiq();
+ 		--gd->gd_intr_nesting_level;
+ 		--td->td_critcount;
+diff --git a/sys/sys/thread.h b/sys/sys/thread.h
+index 3b47a87..27e523f 100644
+--- a/sys/sys/thread.h
++++ b/sys/sys/thread.h
+@@ -484,12 +484,9 @@ extern void lwkt_acquire(struct thread *);
+ extern int  lwkt_send_ipiq3(struct globaldata *, ipifunc3_t, void *, int);
+ extern int  lwkt_send_ipiq3_passive(struct globaldata *, ipifunc3_t,
+ 				    void *, int);
+-extern int  lwkt_send_ipiq3_nowait(struct globaldata *, ipifunc3_t,
+-				   void *, int);
+ extern int  lwkt_send_ipiq3_bycpu(int, ipifunc3_t, void *, int);
+ extern int  lwkt_send_ipiq3_mask(cpumask_t, ipifunc3_t, void *, int);
+ extern void lwkt_wait_ipiq(struct globaldata *, int);
+-extern int  lwkt_seq_ipiq(struct globaldata *);
+ extern void lwkt_process_ipiq(void);
+ extern void lwkt_process_ipiq_frame(struct intrframe *);
+ extern void lwkt_smp_stopped(void);
+diff --git a/sys/sys/thread2.h b/sys/sys/thread2.h
+index 5403de9..0fce984 100644
+--- a/sys/sys/thread2.h
++++ b/sys/sys/thread2.h
+@@ -313,19 +313,6 @@ lwkt_send_ipiq2_mask(cpumask_t mask, ipifunc2_t func, void *arg1, int arg2)
+ }
+ 
+ static __inline int
+-lwkt_send_ipiq_nowait(globaldata_t target, ipifunc1_t func, void *arg)
+-{
+-    return(lwkt_send_ipiq3_nowait(target, (ipifunc3_t)func, arg, 0));
+-}
+-
+-static __inline int
+-lwkt_send_ipiq2_nowait(globaldata_t target, ipifunc2_t func, 
+-		       void *arg1, int arg2)
+-{
+-    return(lwkt_send_ipiq3_nowait(target, (ipifunc3_t)func, arg1, arg2));
+-}
+-
+-static __inline int
+ lwkt_send_ipiq_passive(globaldata_t target, ipifunc1_t func, void *arg)
+ {
+     return(lwkt_send_ipiq3_passive(target, (ipifunc3_t)func, arg, 0));
+-- 
+2.7.2
+

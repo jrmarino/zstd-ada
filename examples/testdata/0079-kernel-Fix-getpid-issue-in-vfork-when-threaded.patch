@@ -1,0 +1,59 @@
+From 2eca01a4442a6c5012507471a3f39c1662854cde Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Thu, 28 Jul 2016 09:39:57 -0700
+Subject: [PATCH 079/100] kernel - Fix getpid() issue in vfork() when threaded
+
+* upmap->invfork was a 0 or 1, but in a threaded program it is possible
+  for multiple threads to be in vfork() at the same time.  Change invfork
+  to a count.
+
+* Fixes improper getpid() return when concurrent vfork()s are occuring in
+  a threaded program.
+---
+ sys/kern/kern_exec.c | 2 +-
+ sys/kern/kern_exit.c | 2 +-
+ sys/kern/kern_fork.c | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/sys/kern/kern_exec.c b/sys/kern/kern_exec.c
+index 17be7f4..454ee94 100644
+--- a/sys/kern/kern_exec.c
++++ b/sys/kern/kern_exec.c
+@@ -425,7 +425,7 @@ interpret:
+ 	p->p_flags |= P_EXEC;
+ 	if (p->p_pptr && (p->p_flags & P_PPWAIT)) {
+ 		if (p->p_pptr->p_upmap)
+-			p->p_pptr->p_upmap->invfork = 0;
++			atomic_add_int(&p->p_pptr->p_upmap->invfork, -1);
+ 		atomic_clear_int(&p->p_flags, P_PPWAIT);
+ 		wakeup(p->p_pptr);
+ 	}
+diff --git a/sys/kern/kern_exit.c b/sys/kern/kern_exit.c
+index aeee8fd..a1c7b86 100644
+--- a/sys/kern/kern_exit.c
++++ b/sys/kern/kern_exit.c
+@@ -498,7 +498,7 @@ exit1(int rv)
+ 	 */
+ 	if (p->p_flags & P_PPWAIT) {
+ 		if (p->p_pptr && p->p_pptr->p_upmap)
+-			p->p_pptr->p_upmap->invfork = 0;
++			atomic_add_int(&p->p_pptr->p_upmap->invfork, -1);
+ 		atomic_clear_int(&p->p_flags, P_PPWAIT);
+ 		wakeup(p->p_pptr);
+ 	}
+diff --git a/sys/kern/kern_fork.c b/sys/kern/kern_fork.c
+index 217193b..7891b68 100644
+--- a/sys/kern/kern_fork.c
++++ b/sys/kern/kern_fork.c
+@@ -522,7 +522,7 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
+ 	if (flags & RFPPWAIT) {
+ 		p2->p_flags |= P_PPWAIT;
+ 		if (p1->p_upmap)
+-			p1->p_upmap->invfork = 1;
++			atomic_add_int(&p1->p_upmap->invfork, 1);
+ 	}
+ 
+ 
+-- 
+2.7.2
+

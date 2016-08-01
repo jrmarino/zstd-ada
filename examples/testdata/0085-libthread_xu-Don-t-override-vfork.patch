@@ -1,0 +1,49 @@
+From f75110789b2c58005b9bbcc6b8123fbc427fa8de Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Thu, 28 Jul 2016 18:05:42 -0700
+Subject: [PATCH 085/100] libthread_xu - Don't override vfork()
+
+* Allow vfork() to operate normally in a threaded environment.  The kernel
+  can handle multiple concurrent vfork()s by different threads (only the
+  calling thread blocks, same as how Linux deals with it).
+---
+ lib/libthread_xu/thread/thr_syscalls.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/lib/libthread_xu/thread/thr_syscalls.c b/lib/libthread_xu/thread/thr_syscalls.c
+index d537ddf..036f720 100644
+--- a/lib/libthread_xu/thread/thr_syscalls.c
++++ b/lib/libthread_xu/thread/thr_syscalls.c
+@@ -158,7 +158,9 @@ int	_raise(int);
+ unsigned	_sleep(unsigned);
+ int	_system(const char *);
+ int	_tcdrain(int);
++#if 0
+ int	_vfork(void);
++#endif
+ pid_t	_wait(int *);
+ pid_t	_waitpid(pid_t wpid, int *status, int options);
+ 
+@@ -636,6 +638,11 @@ ___usleep(unsigned int useconds)
+ 
+ __strong_reference(___usleep, usleep);
+ 
++#if 0
++/*
++ * REMOVED - vfork() works as per normal.  In a threaded environment vfork()
++ *	     blocks the calling thread only and not other threads.
++ */
+ int
+ _vfork(void)
+ {
+@@ -643,6 +650,7 @@ _vfork(void)
+ }
+ 
+ __strong_reference(_vfork, vfork);
++#endif
+ 
+ pid_t
+ _wait(int *istat)
+-- 
+2.7.2
+

@@ -1,0 +1,130 @@
+From 4a3c9110d371f85912be53e5c63f3d8bbf3d9f5f Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Mon, 18 Jul 2016 15:18:05 +0300
+Subject: [PATCH 008/100] Prune _NO_NAMESPACE_POLLUTION cases.
+
+param.h is not needed in sys/socket.h and removing it simplifies
+handling between MD and AD headers.
+---
+ sys/cpu/x86_64/include/param.h         | 14 --------------
+ sys/platform/pc64/include/param.h      | 11 -----------
+ sys/platform/vkernel64/include/param.h |  7 -------
+ sys/sys/socket.h                       |  4 ----
+ 4 files changed, 36 deletions(-)
+
+diff --git a/sys/cpu/x86_64/include/param.h b/sys/cpu/x86_64/include/param.h
+index c2776ba..9dd16b8 100644
+--- a/sys/cpu/x86_64/include/param.h
++++ b/sys/cpu/x86_64/include/param.h
+@@ -35,20 +35,11 @@
+  */
+ 
+ #ifndef _CPU_PARAM_H_
+-
+-/*
+- * Do not prevent re-includes of <machine/param.h> if the file was included
+- * with NO_NAMESPACE_POLLUTION, or expected macros will not exist.
+- */
+-#ifndef _NO_NAMESPACE_POLLUTION
+ #define _CPU_PARAM_H_
+-#endif
+ 
+ /*
+  * Machine dependent constants for x86_64.
+  */
+-#ifndef _CPU_PARAM_H1_
+-#define _CPU_PARAM_H1_
+ 
+ /*
+  * Round p (pointer or byte index) up to a correctly-aligned value
+@@ -69,10 +60,6 @@
+ #define	_MACHINE_ARCH	x86_64
+ #endif
+ 
+-#endif	/* _CPU_PARAM_H1_ */
+-
+-#ifndef _NO_NAMESPACE_POLLUTION
+-
+ #ifndef MACHINE
+ #define MACHINE		"x86_64"
+ #endif
+@@ -258,5 +245,4 @@ extern void _TSTMP(u_int32_t argument);
+ #endif /* !KERN_TIMESTAMP */
+ #endif /* _KERNEL */
+ 
+-#endif /* !_NO_NAMESPACE_POLLUTION */
+ #endif /* !_CPU_PARAM_H_ */
+diff --git a/sys/platform/pc64/include/param.h b/sys/platform/pc64/include/param.h
+index c832e94..8283684 100644
+--- a/sys/platform/pc64/include/param.h
++++ b/sys/platform/pc64/include/param.h
+@@ -1,25 +1,14 @@
+-/*
+- * $DragonFly: src/sys/platform/pc64/include/param.h,v 1.2 2008/08/29 17:07:17 dillon Exp $
+- */
+-
+ #ifndef _MACHINE_PARAM_H_
+-
+-#ifndef _NO_NAMESPACE_POLLUTION
+ #define _MACHINE_PARAM_H_
+-#endif
+ 
+ #ifndef _MACHINE_PLATFORM
+ #define _MACHINE_PLATFORM	pc64
+ #endif
+ 
+-#ifndef _NO_NAMESPACE_POLLUTION
+-
+ #ifndef MACHINE_PLATFORM
+ #define MACHINE_PLATFORM	"pc64"
+ #endif
+ 
+-#endif
+-
+ #include <cpu/param.h>
+ 
+ /* JG from fbsd/sys/amd64/include/param.h */
+diff --git a/sys/platform/vkernel64/include/param.h b/sys/platform/vkernel64/include/param.h
+index 4370868..d1b7f6f 100644
+--- a/sys/platform/vkernel64/include/param.h
++++ b/sys/platform/vkernel64/include/param.h
+@@ -1,21 +1,14 @@
+ #ifndef _MACHINE_PARAM_H_
+-
+-#ifndef _NO_NAMESPACE_POLLUTION
+ #define _MACHINE_PARAM_H_
+-#endif
+ 
+ #ifndef _MACHINE_PLATFORM
+ #define _MACHINE_PLATFORM	vkernel64
+ #endif
+ 
+-#ifndef _NO_NAMESPACE_POLLUTION
+-
+ #ifndef MACHINE_PLATFORM
+ #define MACHINE_PLATFORM	"vkernel64"
+ #endif
+ 
+-#endif
+-
+ /*
+  * Set the default HZ to the likely resolution of the kqueue timer
+  * the vkernel uses, otherwise our ticks will be seriously off and
+diff --git a/sys/sys/socket.h b/sys/sys/socket.h
+index 3d03025..9aa0ee0 100644
+--- a/sys/sys/socket.h
++++ b/sys/sys/socket.h
+@@ -44,10 +44,6 @@
+ #endif
+ #include <machine/stdint.h>
+ 
+-#define	_NO_NAMESPACE_POLLUTION
+-#include <machine/param.h>
+-#undef _NO_NAMESPACE_POLLUTION
+-
+ /*
+  * Definitions related to sockets: types, address families, options.
+  */
+-- 
+2.7.2
+

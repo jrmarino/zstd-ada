@@ -1,0 +1,35 @@
+From 04a0e8c0881658bd60dcac485aa8ea730cd3f0cc Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Tue, 19 Jul 2016 12:29:45 +0300
+Subject: [PATCH 011/100] ifnet.9: Fix if_start() prototype in manpage.
+
+Pointed-out-by: bycn82
+---
+ share/man/man9/ifnet.9 | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/share/man/man9/ifnet.9 b/share/man/man9/ifnet.9
+index a3c4101..c7d0a73 100644
+--- a/share/man/man9/ifnet.9
++++ b/share/man/man9/ifnet.9
+@@ -28,7 +28,7 @@
+ .\"
+ .\" $FreeBSD: src/share/man/man9/ifnet.9,v 1.9.2.10 2003/06/15 02:22:30 hmp Exp $
+ .\"
+-.Dd June 29, 2014
++.Dd July 19, 2016
+ .Dt IFNET 9
+ .Os
+ .Sh NAME
+@@ -94,7 +94,7 @@
+ .Fa "const struct pktinfo *pi" "int cpuid"
+ .Fc
+ .Ft void
+-.Fn (*if_start) "struct ifnet *ifp"
++.Fn (*if_start) "struct ifnet *ifp" "struct ifaltq_subque *ifsq"
+ .Ft int
+ .Fo (*if_ioctl)
+ .Fa "struct ifnet *ifp" "u_long command" "caddr_t data" "struct ucred *cr"
+-- 
+2.7.2
+

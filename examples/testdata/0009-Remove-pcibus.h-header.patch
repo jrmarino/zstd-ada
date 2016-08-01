@@ -1,0 +1,242 @@
+From 0c1d7dca433e727c476aff53acb839b357a28ef6 Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Mon, 18 Jul 2016 18:26:56 +0300
+Subject: [PATCH 009/100] Remove pcibus.h header.
+
+It is a subset of pci_cfgreg.h and both headers were included together.
+---
+ Makefile_upgrade.inc                    |  1 +
+ sys/bus/pci/pcibus.h                    | 44 --------------------------------
+ sys/bus/pci/x86_64/pci_cfgreg.h         |  5 ++++
+ sys/bus/pci/x86_64/pcibus.h             | 45 ---------------------------------
+ sys/dev/misc/coremctl/coremctl.c        |  1 -
+ sys/dev/misc/ecc/ecc_amd8000.c          |  1 -
+ sys/dev/misc/ecc/ecc_e3.c               |  1 -
+ sys/dev/misc/ecc/ecc_e5.c               |  1 -
+ sys/dev/misc/ecc/ecc_x3400.c            |  1 -
+ sys/dev/powermng/memtemp/memtemp_core.c |  1 -
+ sys/dev/powermng/memtemp/memtemp_e5.c   |  1 -
+ 11 files changed, 6 insertions(+), 96 deletions(-)
+ delete mode 100644 sys/bus/pci/pcibus.h
+ delete mode 100644 sys/bus/pci/x86_64/pcibus.h
+
+diff --git a/Makefile_upgrade.inc b/Makefile_upgrade.inc
+index a69774c..f390270 100644
+--- a/Makefile_upgrade.inc
++++ b/Makefile_upgrade.inc
+@@ -3115,6 +3115,7 @@ TO_REMOVE+=/usr/share/man/man8/hlfsd.8.gz
+ TO_REMOVE+=/usr/share/man/man8/mk-amd-map.8.gz
+ TO_REMOVE+=/usr/share/man/man8/wire-test.8.gz
+ TO_REMOVE+=/usr/include/varargs.h
++TO_REMOVE+=/usr/include/bus/pci/pcibus.h
+ 
+ .if !defined(WANT_INSTALLER)
+ TO_REMOVE+=/usr/sbin/dfuibe_installer
+diff --git a/sys/bus/pci/pcibus.h b/sys/bus/pci/pcibus.h
+deleted file mode 100644
+index e974394..0000000
+--- a/sys/bus/pci/pcibus.h
++++ /dev/null
+@@ -1,44 +0,0 @@
+-/*
+- * Copyright (c) 2008 The DragonFly Project.  All rights reserved.
+- *
+- * This code is derived from software contributed to The DragonFly Project
+- * by Matthew Dillon <dillon@backplane.com>
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- *
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in
+- *    the documentation and/or other materials provided with the
+- *    distribution.
+- * 3. Neither the name of The DragonFly Project nor the names of its
+- *    contributors may be used to endorse or promote products derived
+- *    from this software without specific, prior written permission.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+- * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+- * COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+- * INCIDENTAL, SPECIAL, EXEMPLARY OR CONSEQUENTIAL DAMAGES (INCLUDING,
+- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+- * AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+- * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- */
+-
+-#ifndef _BUS_PCI_PCIBUS_H_
+-#define _BUS_PCI_PCIBUS_H_
+-
+-#if defined(__x86_64__)
+-#include "x86_64/pcibus.h"
+-#else
+-#error "No pcibus.h for this architecture"
+-#endif
+-
+-#endif
+diff --git a/sys/bus/pci/x86_64/pci_cfgreg.h b/sys/bus/pci/x86_64/pci_cfgreg.h
+index 1834d13..1393e0c 100644
+--- a/sys/bus/pci/x86_64/pci_cfgreg.h
++++ b/sys/bus/pci/x86_64/pci_cfgreg.h
+@@ -27,6 +27,9 @@
+  *
+  */
+ 
++#ifndef _X86_64_PCI_CFGREG_H_
++#define _X86_64_PCI_CFGREG_H_
++
+ #define CONF1_ADDR_PORT    0x0cf8
+ #define CONF1_DATA_PORT    0x0cfc
+ 
+@@ -53,3 +56,5 @@ void		pci_pir_open(void);
+ int		pci_pir_probe(int bus, int require_parse);
+ int		pci_pir_route_interrupt(int bus, int device, int func, int pin);
+ #endif
++
++#endif /* !_X86_64_PCI_CFGREG_H_ */
+diff --git a/sys/bus/pci/x86_64/pcibus.h b/sys/bus/pci/x86_64/pcibus.h
+deleted file mode 100644
+index cbb5c3a..0000000
+--- a/sys/bus/pci/x86_64/pcibus.h
++++ /dev/null
+@@ -1,45 +0,0 @@
+-/*
+- * Copyright (c) 1997, Stefan Esser <se@freebsd.org>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice unmodified, this list of conditions, and the following
+- *    disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- *
+- * $FreeBSD: src/sys/i386/isa/pcibus.h,v 1.2 1999/08/28 00:44:59 peter Exp $
+- * $DragonFly: src/sys/bus/pci/i386/pcibus.h,v 1.4 2007/08/14 20:09:13 dillon Exp $
+- *
+- */
+-
+-#define CONF1_ADDR_PORT    0x0cf8
+-#define CONF1_DATA_PORT    0x0cfc
+-
+-#define CONF1_ENABLE       0x80000000ul
+-#define CONF1_ENABLE_CHK   0x80000000ul
+-#define CONF1_ENABLE_MSK   0x7f000000ul
+-#define CONF1_ENABLE_CHK1  0xff000001ul
+-#define CONF1_ENABLE_MSK1  0x80000001ul
+-#define CONF1_ENABLE_RES1  0x80000000ul
+-
+-#define CONF2_ENABLE_PORT  0x0cf8
+-#define CONF2_FORWARD_PORT 0x0cfa
+-
+-#define CONF2_ENABLE_CHK   0x0e
+-#define CONF2_ENABLE_RES   0x0e
+diff --git a/sys/dev/misc/coremctl/coremctl.c b/sys/dev/misc/coremctl/coremctl.c
+index e31f542..21e5fa0 100644
+--- a/sys/dev/misc/coremctl/coremctl.c
++++ b/sys/dev/misc/coremctl/coremctl.c
+@@ -41,7 +41,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ 
+ #include <vm/pmap.h>
+diff --git a/sys/dev/misc/ecc/ecc_amd8000.c b/sys/dev/misc/ecc/ecc_amd8000.c
+index 7234023..5e65162 100644
+--- a/sys/dev/misc/ecc/ecc_amd8000.c
++++ b/sys/dev/misc/ecc/ecc_amd8000.c
+@@ -41,7 +41,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ #include <bus/pci/pcib_private.h>
+ 
+diff --git a/sys/dev/misc/ecc/ecc_e3.c b/sys/dev/misc/ecc/ecc_e3.c
+index 8648927..0d2db9c 100644
+--- a/sys/dev/misc/ecc/ecc_e3.c
++++ b/sys/dev/misc/ecc/ecc_e3.c
+@@ -42,7 +42,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ 
+ #include <vm/pmap.h>
+diff --git a/sys/dev/misc/ecc/ecc_e5.c b/sys/dev/misc/ecc/ecc_e5.c
+index 87fd1ba..0d69cf6 100644
+--- a/sys/dev/misc/ecc/ecc_e5.c
++++ b/sys/dev/misc/ecc/ecc_e5.c
+@@ -44,7 +44,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ #include <bus/pci/pcib_private.h>
+ 
+diff --git a/sys/dev/misc/ecc/ecc_x3400.c b/sys/dev/misc/ecc/ecc_x3400.c
+index 070e50e..96e19c4 100644
+--- a/sys/dev/misc/ecc/ecc_x3400.c
++++ b/sys/dev/misc/ecc/ecc_x3400.c
+@@ -41,7 +41,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ #include <bus/pci/pcib_private.h>
+ 
+diff --git a/sys/dev/powermng/memtemp/memtemp_core.c b/sys/dev/powermng/memtemp/memtemp_core.c
+index 8e0a24d..1eacc1f 100644
+--- a/sys/dev/powermng/memtemp/memtemp_core.c
++++ b/sys/dev/powermng/memtemp/memtemp_core.c
+@@ -42,7 +42,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ 
+ #include "coremctl_if.h"
+diff --git a/sys/dev/powermng/memtemp/memtemp_e5.c b/sys/dev/powermng/memtemp/memtemp_e5.c
+index bdb5358..d0bfa96 100644
+--- a/sys/dev/powermng/memtemp/memtemp_e5.c
++++ b/sys/dev/powermng/memtemp/memtemp_e5.c
+@@ -44,7 +44,6 @@
+ 
+ #include <bus/pci/pcivar.h>
+ #include <bus/pci/pcireg.h>
+-#include <bus/pci/pcibus.h>
+ #include <bus/pci/pci_cfgreg.h>
+ #include <bus/pci/pcib_private.h>
+ 
+-- 
+2.7.2
+

@@ -1,0 +1,54 @@
+From 521f740e8971df6fdb1b63933cb534746e86bfae Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Fri, 22 Jul 2016 21:17:29 +0200
+Subject: [PATCH 036/100] Run make depend in quickkernel, too.
+
+It is much cleaner to do that, just like it is run in quickworld, too.
+
+At the price of a small increase in build time, quickkernel will now
+continue working when a new kernel header is added, which broke it
+before this commit because the header would not be copied to the right
+place in /usr/obj.
+---
+ Makefile.inc1 | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/Makefile.inc1 b/Makefile.inc1
+index c0081ff..e866e79 100644
+--- a/Makefile.inc1
++++ b/Makefile.inc1
+@@ -743,8 +743,7 @@ nativekernel:	bk_build_list bk_kernwarn
+ # The quickkernel target rebuilds the specified kernels as quickly
+ # as possible.  It will use the native tools or the buildworld cross tools
+ # based on whether the kernel was originally generated via buildkernel or
+-# nativekernel.  Config is rerun but the object hierarchy is not rebuilt,
+-# nor is the make depend step run.
++# nativekernel.  Config is rerun but the object hierarchy is not rebuilt.
+ #
+ quickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
+ .for _kernel in ${BUILDKERNELS}
+@@ -759,6 +758,10 @@ quickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
+ 		    config ${CONFIGARGS} -d ${KRNLOBJDIR}/${_kernel} \
+ 			${KERNCONFDIR}/${_kernel}
+ .endif
++.if !defined(NO_KERNELDEPEND)
++	cd ${KRNLOBJDIR}/${_kernel}; \
++	    ${KMAKEENV} make KERNEL=${INSTKERNNAME} depend
++.endif
+ 	cd ${KRNLOBJDIR}/${_kernel}; \
+ 	    ${KMAKEENV} make KERNEL=${INSTKERNNAME} all
+ .else
+@@ -767,6 +770,10 @@ quickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
+ 	    config ${CONFIGARGS} -d ${KRNLOBJDIR}/${_kernel} \
+ 		${KERNCONFDIR}/${_kernel}
+ .endif
++.if !defined(NO_KERNELDEPEND)
++	cd ${KRNLOBJDIR}/${_kernel}; \
++	    make KERNEL=${INSTKERNNAME} depend
++.endif
+ 	cd ${KRNLOBJDIR}/${_kernel}; \
+ 	    make KERNEL=${INSTKERNNAME} all
+ .endif
+-- 
+2.7.2
+

@@ -1,0 +1,562 @@
+From 9002b0d5bfaaa14aa7048c4cc55c6bd9a4fa8354 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sat, 30 Jul 2016 12:30:24 -0700
+Subject: [PATCH 096/100] kernel - Refactor cpu localization for VM page
+ allocations (2)
+
+* Finish up the refactoring.  Localize backoffs for search failures
+  by doing a masked domain search.  This avoids bleeding into non-local
+  page queues until we've completely exhausted our local queues,
+  regardess of the starting pg_color index.
+
+* We try to maintain 16-way set associativity for VM page allocations
+  even if the topology does not allow us to do it perfect.  So, for
+  example, a 4-socket x 12-core (48-core) opteron can break the 256
+  queues into 4 x 64 queues, then split the 12-cores per socket into
+  sets of 3 giving 16 queues (the minimum) to each set of 3 cores.
+
+* Refactor the page-zeroing code to only check the localized area.
+  This fixes a number of issues related to the zerod pages in the
+  queues winding up severely unbalanced.  Other cpus in the local
+  group can help replentish a particular cpu's pre-zerod pages but
+  we intentionally allow a heavy user to exhaust the pages.
+
+* Adjust the cpu topology code to normalize the physical package id.
+  Some machines start at 1, some machines start at 0.  Normalize
+  everything to start at 0.
+---
+ sys/kern/subr_cpu_topology.c |  27 ++++--
+ sys/vm/vm_object.c           |  10 +--
+ sys/vm/vm_page.c             | 196 ++++++++++++++++++++++++++++---------------
+ sys/vm/vm_page.h             |  27 ++----
+ sys/vm/vm_zeroidle.c         |  40 ++++++---
+ 5 files changed, 185 insertions(+), 115 deletions(-)
+
+diff --git a/sys/kern/subr_cpu_topology.c b/sys/kern/subr_cpu_topology.c
+index 1d883c4..557733c 100644
+--- a/sys/kern/subr_cpu_topology.c
++++ b/sys/kern/subr_cpu_topology.c
+@@ -539,9 +539,12 @@ get_cpu_node_by_chipid(int chip_id)
+ static void
+ init_pcpu_topology_sysctl(void)
+ {
+-	int i;
+-	cpumask_t mask;
+ 	struct sbuf sb;
++	cpumask_t mask;
++	int min_id = -1;
++	int max_id = -1;
++	int i;
++	int phys_id;
+ 
+ 	pcpu_sysctl = kmalloc(sizeof(*pcpu_sysctl) * MAXCPU, M_PCPUSYS,
+ 			      M_INTWAIT | M_ZERO);
+@@ -566,9 +569,12 @@ init_pcpu_topology_sysctl(void)
+ 		sbuf_trim(&sb);
+ 		sbuf_finish(&sb);
+ 
+-		pcpu_sysctl[i].physical_id = get_chip_ID(i); 
+-		if (cpu_topology_phys_ids < pcpu_sysctl[i].physical_id)
+-			cpu_topology_phys_ids = pcpu_sysctl[i].physical_id + 1;
++		phys_id = get_chip_ID(i);
++		pcpu_sysctl[i].physical_id = phys_id;
++		if (min_id < 0 || min_id > phys_id)
++			min_id = phys_id;
++		if (max_id < 0 || max_id < phys_id)
++			max_id = phys_id;
+ 
+ 		/* Get core siblings */
+ 		mask = get_cpumask_from_level(i, CORE_LEVEL);
+@@ -588,6 +594,17 @@ init_pcpu_topology_sysctl(void)
+ 			cpu_topology_core_ids = pcpu_sysctl[i].core_id + 1;
+ 
+ 	}
++
++	/*
++	 * Normalize physical ids so they can be used by the VM system.
++	 * Some systems number starting at 0 others number starting at 1.
++	 */
++	cpu_topology_phys_ids = max_id - min_id + 1;
++	if (cpu_topology_phys_ids <= 0)		/* don't crash */
++		cpu_topology_phys_ids = 1;
++	for (i = 0; i < ncpus; i++) {
++		pcpu_sysctl[i].physical_id %= cpu_topology_phys_ids;
++	}
+ }
+ 
+ /* Build SYSCTL structure for revealing
+diff --git a/sys/vm/vm_object.c b/sys/vm/vm_object.c
+index 4abccd4..6dea068 100644
+--- a/sys/vm/vm_object.c
++++ b/sys/vm/vm_object.c
+@@ -134,7 +134,6 @@ static long vm_object_count;
+ 
+ static long object_collapses;
+ static long object_bypasses;
+-static int next_index;
+ static vm_zone_t obj_zone;
+ static struct vm_zone obj_zone_store;
+ #define VM_OBJECTS_INIT 256
+@@ -257,7 +256,8 @@ vm_quickcolor(void)
+ 	int pg_color;
+ 
+ 	pg_color = (int)(intptr_t)gd->gd_curthread >> 10;
+-	pg_color += ++gd->gd_quick_color;
++	pg_color += gd->gd_quick_color;
++	gd->gd_quick_color += PQ_PRIME2;
+ 
+ 	return pg_color;
+ }
+@@ -371,7 +371,6 @@ VMOBJDEBUG(vm_object_drop)(vm_object_t obj VMOBJDBARGS)
+ void
+ _vm_object_allocate(objtype_t type, vm_pindex_t size, vm_object_t object)
+ {
+-	int incr;
+ 	int n;
+ 
+ 	RB_INIT(&object->rb_memq);
+@@ -392,11 +391,6 @@ _vm_object_allocate(objtype_t type, vm_pindex_t size, vm_object_t object)
+ 	object->shadow_count = 0;
+ 	/* cpu localization twist */
+ 	object->pg_color = vm_quickcolor();
+-	if ( size > (PQ_L2_SIZE / 3 + PQ_PRIME1))
+-		incr = PQ_L2_SIZE / 3 + PQ_PRIME1;
+-	else
+-		incr = size;
+-	next_index = (next_index + incr) & PQ_L2_MASK;
+ 	object->handle = NULL;
+ 	object->backing_object = NULL;
+ 	object->backing_object_offset = (vm_ooffset_t)0;
+diff --git a/sys/vm/vm_page.c b/sys/vm/vm_page.c
+index 54fb36c..bfcbfff 100644
+--- a/sys/vm/vm_page.c
++++ b/sys/vm/vm_page.c
+@@ -97,8 +97,25 @@
+ #include <vm/vm_page2.h>
+ #include <sys/spinlock2.h>
+ 
+-#define VMACTION_HSIZE	256
+-#define VMACTION_HMASK	(VMACTION_HSIZE - 1)
++/*
++ * Action hash for user umtx support.
++ */
++#define VMACTION_HSIZE		256
++#define VMACTION_HMASK		(VMACTION_HSIZE - 1)
++
++/*
++ * SET - Minimum required set associative size, must be a power of 2.  We
++ *	 want this to match or exceed the set-associativeness of the cpu.
++ *
++ * GRP - A larger set that allows bleed-over into the domains of other
++ *	 nearby cpus.  Also must be a power of 2.  Used by the page zeroing
++ *	 code to smooth things out a bit.
++ */
++#define PQ_SET_ASSOC		16
++#define PQ_SET_ASSOC_MASK	(PQ_SET_ASSOC - 1)
++
++#define PQ_GRP_ASSOC		(PQ_SET_ASSOC * 2)
++#define PQ_GRP_ASSOC_MASK	(PQ_GRP_ASSOC - 1)
+ 
+ static void vm_page_queue_init(void);
+ static void vm_page_free_wakeup(void);
+@@ -750,6 +767,69 @@ vm_page_sleep_busy(vm_page_t m, int also_m_busy, const char *msg)
+ }
+ 
+ /*
++ * This calculates and returns a page color given an optional VM object and
++ * either a pindex or an iterator.  We attempt to return a cpu-localized
++ * pg_color that is still roughly 16-way set-associative.  The CPU topology
++ * is used if it was probed.
++ *
++ * The caller may use the returned value to index into e.g. PQ_FREE when
++ * allocating a page in order to nominally obtain pages that are hopefully
++ * already localized to the requesting cpu.  This function is not able to
++ * provide any sort of guarantee of this, but does its best to improve
++ * hardware cache management performance.
++ *
++ * WARNING! The caller must mask the returned value with PQ_L2_MASK.
++ */
++u_short
++vm_get_pg_color(globaldata_t gd, vm_object_t object, vm_pindex_t pindex)
++{
++	u_short pg_color;
++	int phys_id;
++	int core_id;
++	int object_pg_color;
++
++	phys_id = get_cpu_phys_id(gd->gd_cpuid);
++	core_id = get_cpu_core_id(gd->gd_cpuid);
++	object_pg_color = object ? object->pg_color : 0;
++
++	if (cpu_topology_phys_ids && cpu_topology_core_ids) {
++		int grpsize = PQ_L2_SIZE / cpu_topology_phys_ids;
++
++		if (grpsize / cpu_topology_core_ids >= PQ_SET_ASSOC) {
++			/*
++			 * Enough space for a full break-down.
++			 */
++			pg_color = phys_id * grpsize;
++			pg_color += core_id * grpsize / cpu_topology_core_ids;
++			pg_color += (pindex + object_pg_color) %
++				    (grpsize / cpu_topology_core_ids);
++		} else {
++			/*
++			 * Not enough space, split up by physical package,
++			 * then split up by core id but only down to a
++			 * 16-set.  If all else fails, force a 16-set.
++			 */
++			pg_color = phys_id * grpsize;
++			if (grpsize > 16) {
++				pg_color += 16 * (core_id % (grpsize / 16));
++				grpsize = 16;
++			} else {
++				grpsize = 16;
++			}
++			pg_color += (pindex + object_pg_color) %
++				    grpsize;
++		}
++	} else {
++		/*
++		 * Unknown topology, distribute things evenly.
++		 */
++		pg_color = gd->gd_cpuid * PQ_L2_SIZE / ncpus;
++		pg_color += pindex + object_pg_color;
++	}
++	return pg_color;
++}
++
++/*
+  * Wait until PG_BUSY can be set, then set it.  If also_m_busy is TRUE we
+  * also wait for m->busy to become 0 before setting PG_BUSY.
+  */
+@@ -1312,6 +1392,9 @@ vm_page_unqueue(vm_page_t m)
+  * caches.  We need this optimization because cpu caches tend to be
+  * physical caches, while object spaces tend to be virtual.
+  *
++ * The page coloring optimization also, very importantly, tries to localize
++ * memory to cpus and physical sockets.
++ *
+  * On MP systems each PQ_FREE and PQ_CACHE color queue has its own spinlock
+  * and the algorithm is adjusted to localize allocations on a per-core basis.
+  * This is done by 'twisting' the colors.
+@@ -1336,10 +1419,12 @@ _vm_page_list_find(int basequeue, int index, boolean_t prefer_zero)
+ 	vm_page_t m;
+ 
+ 	for (;;) {
+-		if (prefer_zero)
+-			m = TAILQ_LAST(&vm_page_queues[basequeue+index].pl, pglist);
+-		else
++		if (prefer_zero) {
++			m = TAILQ_LAST(&vm_page_queues[basequeue+index].pl,
++				       pglist);
++		} else {
+ 			m = TAILQ_FIRST(&vm_page_queues[basequeue+index].pl);
++		}
+ 		if (m == NULL) {
+ 			m = _vm_page_list_find2(basequeue, index);
+ 			return(m);
+@@ -1355,49 +1440,44 @@ _vm_page_list_find(int basequeue, int index, boolean_t prefer_zero)
+ 	return(m);
+ }
+ 
++/*
++ * If we could not find the page in the desired queue try to find it in
++ * a nearby queue.
++ */
+ static vm_page_t
+ _vm_page_list_find2(int basequeue, int index)
+ {
+-	int i;
+-	vm_page_t m = NULL;
+ 	struct vpgqueues *pq;
++	vm_page_t m = NULL;
++	int pqmask = PQ_SET_ASSOC_MASK >> 1;
++	int pqi;
++	int i;
+ 
++	index &= PQ_L2_MASK;
+ 	pq = &vm_page_queues[basequeue];
+ 
+ 	/*
+-	 * Note that for the first loop, index+i and index-i wind up at the
+-	 * same place.  Even though this is not totally optimal, we've already
+-	 * blown it by missing the cache case so we do not care.
+-	 *
+-	 * NOTE: Fan out from our starting index for localization purposes.
++	 * Run local sets of 16, 32, 64, 128, and the whole queue if all
++	 * else fails (PQ_L2_MASK which is 255).
+ 	 */
+-	for (i = 1; i <= PQ_L2_SIZE / 2; ++i) {
+-		for (;;) {
+-			m = TAILQ_FIRST(&pq[(index + i) & PQ_L2_MASK].pl);
+-			if (m) {
+-				_vm_page_and_queue_spin_lock(m);
+-				if (m->queue ==
+-				    basequeue + ((index + i) & PQ_L2_MASK)) {
+-					_vm_page_rem_queue_spinlocked(m);
+-					return(m);
+-				}
+-				_vm_page_and_queue_spin_unlock(m);
+-				continue;
+-			}
+-			m = TAILQ_FIRST(&pq[(index - i) & PQ_L2_MASK].pl);
++	do {
++		pqmask = (pqmask << 1) | 1;
++		for (i = 0; i <= pqmask; ++i) {
++			pqi = (index & ~pqmask) | ((index + i) & pqmask);
++			m = TAILQ_FIRST(&pq[pqi].pl);
+ 			if (m) {
+ 				_vm_page_and_queue_spin_lock(m);
+-				if (m->queue ==
+-				    basequeue + ((index - i) & PQ_L2_MASK)) {
++				if (m->queue == basequeue + pqi) {
+ 					_vm_page_rem_queue_spinlocked(m);
+ 					return(m);
+ 				}
+ 				_vm_page_and_queue_spin_unlock(m);
++				--i;
+ 				continue;
+ 			}
+-			break;	/* next i */
+ 		}
+-	}
++	} while (pqmask != PQ_L2_MASK);
++
+ 	return(m);
+ }
+ 
+@@ -1600,9 +1680,6 @@ vm_page_alloc(vm_object_t object, vm_pindex_t pindex, int page_req)
+ 	vm_object_t obj;
+ 	vm_page_t m;
+ 	u_short pg_color;
+-	int phys_id;
+-	int core_id;
+-	int object_pg_color;
+ 
+ #if 0
+ 	/*
+@@ -1632,39 +1709,7 @@ vm_page_alloc(vm_object_t object, vm_pindex_t pindex, int page_req)
+ 	 * subgroup will overflow into the next cpu or package.  But this
+ 	 * should get us good page reuse locality in heavy mixed loads.
+ 	 */
+-	phys_id = get_cpu_phys_id(gd->gd_cpuid);
+-	core_id = get_cpu_core_id(gd->gd_cpuid);
+-	object_pg_color = object ? object->pg_color : 0;
+-
+-	if (cpu_topology_phys_ids && cpu_topology_core_ids) {
+-		if (PQ_L2_SIZE / ncpus >= 16) {
+-			/*
+-			 * Enough space for a full break-down.
+-			 */
+-			pg_color = PQ_L2_SIZE * core_id /
+-				   cpu_topology_core_ids;
+-			pg_color += PQ_L2_SIZE * phys_id *
+-				    cpu_topology_core_ids /
+-				    cpu_topology_phys_ids;
+-			pg_color += (pindex + object_pg_color) %
+-				    (PQ_L2_SIZE / (cpu_topology_core_ids *
+-						   cpu_topology_phys_ids));
+-		} else {
+-			/*
+-			 * Hopefully enough space to at least break the
+-			 * queues down by package id.
+-			 */
+-			pg_color = PQ_L2_SIZE * phys_id / cpu_topology_phys_ids;
+-			pg_color += (pindex + object_pg_color) %
+-				    (PQ_L2_SIZE / cpu_topology_phys_ids);
+-		}
+-	} else {
+-		/*
+-		 * Unknown topology, distribute things evenly.
+-		 */
+-		pg_color = gd->gd_cpuid * PQ_L2_SIZE / ncpus;
+-		pg_color += pindex + object_pg_color;
+-	}
++	pg_color = vm_get_pg_color(gd, object, pindex);
+ 
+ 	KKASSERT(page_req & 
+ 		(VM_ALLOC_NORMAL|VM_ALLOC_QUICK|
+@@ -2224,15 +2269,29 @@ vm_page_free_toq(vm_page_t m)
+  *
+  * Remove a non-zero page from one of the free queues; the page is removed for
+  * zeroing, so do not issue a wakeup.
++ *
++ * Our zeroidle code is now per-cpu so only do a limited scan.  We try to
++ * stay within a single cpu's domain but we do a little statistical
++ * improvement by encompassing two cpu's domains worst-case.
+  */
+ vm_page_t
+ vm_page_free_fromq_fast(void)
+ {
+-	static int qi;
++	globaldata_t gd = mycpu;
+ 	vm_page_t m;
+ 	int i;
++	int qi;
++
++	m = NULL;
++	qi = vm_get_pg_color(gd, NULL, ++gd->gd_quick_color);
++	qi = qi & PQ_L2_MASK;
+ 
+-	for (i = 0; i < PQ_L2_SIZE; ++i) {
++	/*
++	 * 16 = one cpu's domain
++	 * 32 = two cpu's domains
++	 * (note masking at bottom of loop!)
++	 */
++	for (i = 0; i < 10; ++i) {
+ 		m = vm_page_list_find(PQ_FREE, qi, FALSE);
+ 		/* page is returned spinlocked and removed from its queue */
+ 		if (m) {
+@@ -2271,7 +2330,6 @@ vm_page_free_fromq_fast(void)
+ 			}
+ 			m = NULL;
+ 		}
+-		qi = (qi + PQ_PRIME2) & PQ_L2_MASK;
+ 	}
+ 	return (m);
+ }
+diff --git a/sys/vm/vm_page.h b/sys/vm/vm_page.h
+index 1310ce8..4c8f078 100644
+--- a/sys/vm/vm_page.h
++++ b/sys/vm/vm_page.h
+@@ -205,25 +205,6 @@ typedef struct vm_page *vm_page_t;
+ #define PQ_PRIME1 31	/* Prime number somewhat less than PQ_HASH_SIZE */
+ #define PQ_PRIME2 23	/* Prime number somewhat less than PQ_HASH_SIZE */
+ #define PQ_L2_SIZE 256	/* A number of colors opt for 1M cache */
+-
+-#if 0
+-#define PQ_PRIME1 31	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_PRIME2 23	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_L2_SIZE 128	/* A number of colors opt for 512K cache */
+-
+-#define PQ_PRIME1 13	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_PRIME2 7	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_L2_SIZE 64	/* A number of colors opt for 256K cache */
+-
+-#define PQ_PRIME1 9	/* Produces a good PQ_L2_SIZE/3 + PQ_PRIME1 */
+-#define PQ_PRIME2 5	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_L2_SIZE 32	/* A number of colors opt for 128k cache */
+-
+-#define PQ_PRIME1 5	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_PRIME2 3	/* Prime number somewhat less than PQ_HASH_SIZE */
+-#define PQ_L2_SIZE 16	/* A reasonable number of colors (opt for 64K cache) */
+-#endif
+-
+ #define PQ_L2_MASK	(PQ_L2_SIZE - 1)
+ 
+ #define PQ_NONE		0
+@@ -461,8 +442,12 @@ void vm_page_dirty(vm_page_t m);
+ void vm_page_register_action(vm_page_action_t action, vm_page_event_t event);
+ void vm_page_unregister_action(vm_page_action_t action);
+ void vm_page_sleep_busy(vm_page_t m, int also_m_busy, const char *msg);
+-void VM_PAGE_DEBUG_EXT(vm_page_busy_wait)(vm_page_t m, int also_m_busy, const char *wmsg VM_PAGE_DEBUG_ARGS);
+-int VM_PAGE_DEBUG_EXT(vm_page_busy_try)(vm_page_t m, int also_m_busy VM_PAGE_DEBUG_ARGS);
++void VM_PAGE_DEBUG_EXT(vm_page_busy_wait)(vm_page_t m,
++			int also_m_busy, const char *wmsg VM_PAGE_DEBUG_ARGS);
++int VM_PAGE_DEBUG_EXT(vm_page_busy_try)(vm_page_t m,
++			int also_m_busy VM_PAGE_DEBUG_ARGS);
++u_short vm_get_pg_color(globaldata_t gd, vm_object_t object,
++			vm_pindex_t pindex);
+ 
+ #ifdef VM_PAGE_DEBUG
+ 
+diff --git a/sys/vm/vm_zeroidle.c b/sys/vm/vm_zeroidle.c
+index bec3d7c..a9f8765 100644
+--- a/sys/vm/vm_zeroidle.c
++++ b/sys/vm/vm_zeroidle.c
+@@ -59,9 +59,6 @@
+ /*
+  * Implement the pre-zeroed page mechanism.
+  */
+-#define ZIDLE_LO(v)	((v) * 2 / 3)
+-#define ZIDLE_HI(v)	((v) * 4 / 5)
+-
+ /* Number of bytes to zero between reschedule checks */
+ #define IDLEZERO_RUN	(64)
+ 
+@@ -79,8 +76,8 @@ static int idlezero_nocache = -1;
+ SYSCTL_INT(_vm, OID_AUTO, idlezero_nocache, CTLFLAG_RW, &idlezero_nocache, 0,
+ 	   "Maximum pages per second to zero");
+ 
+-static int idlezero_count = 0;
+-SYSCTL_INT(_vm, OID_AUTO, idlezero_count, CTLFLAG_RD, &idlezero_count, 0,
++static ulong idlezero_count = 0;
++SYSCTL_ULONG(_vm, OID_AUTO, idlezero_count, CTLFLAG_RD, &idlezero_count, 0,
+ 	   "The number of physical pages prezeroed at idle time");
+ 
+ enum zeroidle_state {
+@@ -106,28 +103,47 @@ enum zeroidle_state {
+ static int
+ vm_page_zero_check(int *zero_countp, int *zero_statep)
+ {
++	int base;
++	int count;
++	int nz;
++	int nt;
+ 	int i;
+ 
+ 	*zero_countp = 0;
+ 	if (idlezero_enable == 0)
+ 		return (0);
+-	for (i = 0; i < PQ_L2_SIZE; ++i) {
+-		struct vpgqueues *vpq = &vm_page_queues[PQ_FREE + i];
+-		*zero_countp += vpq->zero_count;
++
++	base = vm_get_pg_color(mycpu, NULL, 0) & PQ_L2_MASK;
++	count = 16;
++	while (count < PQ_L2_SIZE / ncpus)
++		count <<= 1;
++	if (base + count > PQ_L2_SIZE)
++		count = PQ_L2_SIZE - base;
++
++	for (i = nt = nz = 0; i < count; ++i) {
++		struct vpgqueues *vpq = &vm_page_queues[PQ_FREE + base + i];
++		nz += vpq->zero_count;
++		nt += vpq->lcnt;
++	}
++
++	if (nt > 10) {
++		*zero_countp = nz * 100 / nt;
++	} else {
++		*zero_countp = 100;
+ 	}
+ 	if (*zero_statep == 0) {
+ 		/*
+ 		 * Wait for the count to fall to LO before starting
+ 		 * to zero pages.
+ 		 */
+-		if (*zero_countp <= ZIDLE_LO(vmstats.v_free_count))
++		if (*zero_countp <= 50)
+ 			*zero_statep = 1;
+ 	} else {
+ 		/*
+ 		 * Once we are zeroing pages wait for the count to
+ 		 * increase to HI before we stop zeroing pages.
+ 		 */
+-		if (*zero_countp >= ZIDLE_HI(vmstats.v_free_count))
++		if (*zero_countp >= 90)
+ 			*zero_statep = 0;
+ 	}
+ 	return (*zero_statep);
+@@ -142,7 +158,7 @@ vm_page_zero_time(int zero_count)
+ {
+ 	if (idlezero_enable == 0)
+ 		return (LONG_SLEEP_TIME);
+-	if (zero_count >= ZIDLE_HI(vmstats.v_free_count))
++	if (zero_count >= 90)
+ 		return (LONG_SLEEP_TIME);
+ 	return (DEFAULT_SLEEP_TIME);
+ }
+@@ -233,7 +249,7 @@ vm_pagezero(void *arg)
+ 			vm_page_flag_set(m, PG_ZERO);
+ 			vm_page_free_toq(m);
+ 			state = STATE_GET_PAGE;
+-			++idlezero_count;
++			++idlezero_count;	/* non-locked, SMP race ok */
+ 			break;
+ 		}
+ 		lwkt_yield();
+-- 
+2.7.2
+

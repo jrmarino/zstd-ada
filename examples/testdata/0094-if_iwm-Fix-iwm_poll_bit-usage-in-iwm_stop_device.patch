@@ -1,0 +1,31 @@
+From 144d4fa7b758735badcf23055fe5374cab311af7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Imre=20Vad=C3=A1sz?= <imre@vdsz.com>
+Date: Sat, 30 Jul 2016 12:32:26 +0200
+Subject: [PATCH 094/100] if_iwm - Fix iwm_poll_bit() usage in
+ iwm_stop_device().
+
+* The iwm(4) iwm_poll_bit() returns 1 on success and 0 on failure,
+  whereas iwl_poll_bit() in Linux iwlwifi returns >= 0 on success and
+  < 0 on failure.
+---
+ sys/dev/netif/iwm/if_iwm.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/sys/dev/netif/iwm/if_iwm.c b/sys/dev/netif/iwm/if_iwm.c
+index b5817c4..83df3f2 100644
+--- a/sys/dev/netif/iwm/if_iwm.c
++++ b/sys/dev/netif/iwm/if_iwm.c
+@@ -1383,8 +1383,8 @@ iwm_stop_device(struct iwm_softc *sc)
+ 		}
+ 
+ 		/* Wait for DMA channels to be idle */
+-		if (iwm_poll_bit(sc, IWM_FH_TSSR_TX_STATUS_REG, mask, mask,
+-		    5000) < 0) {
++		if (!iwm_poll_bit(sc, IWM_FH_TSSR_TX_STATUS_REG, mask, mask,
++		    5000)) {
+ 			device_printf(sc->sc_dev,
+ 			    "Failing on timeout while stopping DMA channel: [0x%08x]\n",
+ 			    IWM_READ(sc, IWM_FH_TSSR_TX_STATUS_REG));
+-- 
+2.7.2
+

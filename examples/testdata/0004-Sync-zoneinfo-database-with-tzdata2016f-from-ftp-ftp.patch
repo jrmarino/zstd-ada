@@ -1,0 +1,241 @@
+From 8d6dd0f6301da14026595e1f8b5c5379c41fd530 Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Sun, 17 Jul 2016 23:19:42 +0200
+Subject: [PATCH 004/100] Sync zoneinfo database with tzdata2016f from
+ ftp://ftp.iana.org/tz/releases
+
+* The Egyptian government changed its mind on short notice, and
+    Africa/Cairo did not introduce DST starting 2016-07-07 after all.
+    (Thanks to Mina Samuel.)
+
+* Asia/Novosibirsk switches from +06 to +07 on 2016-07-24 at 02:00.
+    (Thanks to Stepan Golosunov.)
+
+* Asia/Novokuznetsk and Asia/Novosibirsk now use numeric time zone
+    abbreviations instead of invented ones.
+
+* Europe/Minsk's 1992-03-29 spring-forward transition was at 02:00 not 00:00.
+    (Thanks to Stepan Golosunov.)
+---
+ share/zoneinfo/NEWS   | 22 ++++++++++++++
+ share/zoneinfo/africa | 84 ++-------------------------------------------------
+ share/zoneinfo/europe | 47 +++++++++++++++++-----------
+ 3 files changed, 53 insertions(+), 100 deletions(-)
+
+diff --git a/share/zoneinfo/NEWS b/share/zoneinfo/NEWS
+index d1ada9b..f59583f 100644
+--- a/share/zoneinfo/NEWS
++++ b/share/zoneinfo/NEWS
+@@ -1,5 +1,27 @@
+ News for the tz database
+ 
++Release 2016f - 2016-07-05 16:26:51 +0200
++
++  Changes affecting future time stamps
++
++    The Egyptian government changed its mind on short notice, and
++    Africa/Cairo will not introduce DST starting 2016-07-07 after all.
++    (Thanks to Mina Samuel.)
++
++    Asia/Novosibirsk switches from +06 to +07 on 2016-07-24 at 02:00.
++    (Thanks to Stepan Golosunov.)
++
++  Changes to past and future time stamps
++
++    Asia/Novokuznetsk and Asia/Novosibirsk now use numeric time zone
++    abbreviations instead of invented ones.
++
++  Changes affecting past time stamps
++
++    Europe/Minsk's 1992-03-29 spring-forward transition was at 02:00 not 00:00.
++    (Thanks to Stepan Golosunov.)
++
++
+ Release 2016e - 2016-06-14 08:46:16 -0700
+ 
+   Changes affecting future time stamps
+diff --git a/share/zoneinfo/africa b/share/zoneinfo/africa
+index 547e215..50f29d5 100644
+--- a/share/zoneinfo/africa
++++ b/share/zoneinfo/africa
+@@ -346,41 +346,8 @@ Rule	Egypt	2007	only	-	Sep	Thu>=1	24:00	0	-
+ # From Steffen Thorsen (2016-04-29):
+ # Egypt will have DST from July 7 until the end of October....
+ # http://english.ahram.org.eg/NewsContentP/1/204655/Egypt/Daylight-savings-time-returning-to-Egypt-on--July.aspx
+-# http://www.nileinternational.net/en/?p=25806
+-# ... EgyptAir seems to have assumed DST to start in April (like it previously
+-# did in 2010), and therefore this obviously causes problems with the schedules:
+-# http://www.egyptair.com/en/about-egyptair/news-and-press/Pages/CANCELLATION%20OF%20DAYLIGHT%20SAVING%20TIME.aspx
+-#
+-# From Paul Eggert (2016-04-29):
+-# For now, guess fall transitions will be October's last Thursday at
+-# 24:00 and spring transitions will follow rules used 1995-2010 and be
+-# April's last Thursday at 24:00, and guess a switch to standard time at
+-# 24:00 the last Thursday before Ramadan, and back to DST at 00:00 the
+-# first Friday after Ramadan.  To implement this,
+-# transition dates for 2016 through 2068 were determined by running
+-# the following program under GNU Emacs 24.5, with the results integrated
+-# by hand into the table below.  Ramadan again intrudes on the guessed
+-# DST starting in 2069, but that's beyond our somewhat-arbitrary cutoff here.
+-# (let ((islamic-year 1437))
+-#   (while (< islamic-year 1491)
+-#     (let ((a (calendar-islamic-to-absolute (list 9 1 islamic-year)))
+-#           (b (calendar-islamic-to-absolute (list 10 1 islamic-year)))
+-#           (friday 5))
+-#       (while (/= friday (mod a 7))
+-#         (setq a (1- a)))
+-#       (while (/= friday (mod b 7))
+-#         (setq b (1+ b)))
+-#       (setq a (1- a))
+-#       (setq b (1- b))
+-#       (setq a (calendar-gregorian-from-absolute a))
+-#       (setq b (calendar-gregorian-from-absolute b))
+-#       (insert
+-#        (format
+-#         (concat "Rule\tEgypt\t%d\tonly\t-\t%s\t%2d\t24:00\t0\t-\n"
+-#                 "Rule\tEgypt\t%d\tonly\t-\t%s\t%2d\t24:00\t1:00\tS\n")
+-#         (car (cdr (cdr a))) (calendar-month-name (car a) t) (car (cdr a))
+-#         (car (cdr (cdr b))) (calendar-month-name (car b) t) (car (cdr b)))))
+-#     (setq islamic-year (+ 1 islamic-year))))
++# From Mina Samuel (2016-07-04):
++# Egyptian government took the decision to cancel the DST,
+ 
+ Rule	Egypt	2008	only	-	Aug	lastThu	24:00	0	-
+ Rule	Egypt	2009	only	-	Aug	20	24:00	0	-
+@@ -391,53 +358,6 @@ Rule	Egypt	2014	only	-	May	15	24:00	1:00	S
+ Rule	Egypt	2014	only	-	Jun	26	24:00	0	-
+ Rule	Egypt	2014	only	-	Jul	31	24:00	1:00	S
+ Rule	Egypt	2014	only	-	Sep	lastThu	24:00	0	-
+-Rule	Egypt	2016	only	-	Jul	 7	24:00	1:00	S
+-Rule	Egypt	2016	2035	-	Oct	lastThu	24:00	0	-
+-Rule	Egypt	2017	2019	-	Apr	lastThu	24:00	1:00	S
+-Rule	Egypt	2017	only	-	May	25	24:00	0	-
+-Rule	Egypt	2017	only	-	Jun	29	24:00	1:00	S
+-Rule	Egypt	2018	only	-	May	10	24:00	0	-
+-Rule	Egypt	2018	only	-	Jun	14	24:00	1:00	S
+-Rule	Egypt	2019	only	-	May	 2	24:00	0	-
+-Rule	Egypt	2019	only	-	Jun	 6	24:00	1:00	S
+-Rule	Egypt	2020	only	-	May	28	24:00	1:00	S
+-Rule	Egypt	2021	only	-	May	13	24:00	1:00	S
+-Rule	Egypt	2022	only	-	May	 5	24:00	1:00	S
+-Rule	Egypt	2023	2051	-	Apr	lastThu	24:00	1:00	S
+-Rule	Egypt	2036	only	-	Oct	16	24:00	0	-
+-Rule	Egypt	2037	only	-	Oct	 8	24:00	0	-
+-Rule	Egypt	2038	only	-	Sep	23	24:00	0	-
+-Rule	Egypt	2039	only	-	Sep	15	24:00	0	-
+-Rule	Egypt	2039	only	-	Oct	20	24:00	1:00	S
+-Rule	Egypt	2039	max	-	Oct	lastThu	24:00	0	-
+-Rule	Egypt	2040	only	-	Sep	 6	24:00	0	-
+-Rule	Egypt	2040	only	-	Oct	11	24:00	1:00	S
+-Rule	Egypt	2041	only	-	Aug	22	24:00	0	-
+-Rule	Egypt	2041	only	-	Sep	26	24:00	1:00	S
+-Rule	Egypt	2042	only	-	Aug	14	24:00	0	-
+-Rule	Egypt	2042	only	-	Sep	18	24:00	1:00	S
+-Rule	Egypt	2043	only	-	Aug	 6	24:00	0	-
+-Rule	Egypt	2043	only	-	Sep	10	24:00	1:00	S
+-Rule	Egypt	2044	only	-	Jul	21	24:00	0	-
+-Rule	Egypt	2044	only	-	Aug	25	24:00	1:00	S
+-Rule	Egypt	2045	only	-	Jul	13	24:00	0	-
+-Rule	Egypt	2045	only	-	Aug	17	24:00	1:00	S
+-Rule	Egypt	2046	only	-	Jun	28	24:00	0	-
+-Rule	Egypt	2046	only	-	Aug	 9	24:00	1:00	S
+-Rule	Egypt	2047	only	-	Jun	20	24:00	0	-
+-Rule	Egypt	2047	only	-	Jul	25	24:00	1:00	S
+-Rule	Egypt	2048	only	-	Jun	11	24:00	0	-
+-Rule	Egypt	2048	only	-	Jul	16	24:00	1:00	S
+-Rule	Egypt	2049	only	-	May	27	24:00	0	-
+-Rule	Egypt	2049	only	-	Jul	 1	24:00	1:00	S
+-Rule	Egypt	2050	only	-	May	19	24:00	0	-
+-Rule	Egypt	2050	only	-	Jun	23	24:00	1:00	S
+-Rule	Egypt	2051	only	-	May	11	24:00	0	-
+-Rule	Egypt	2051	only	-	Jun	15	24:00	1:00	S
+-Rule	Egypt	2052	only	-	May	30	24:00	1:00	S
+-Rule	Egypt	2053	only	-	May	22	24:00	1:00	S
+-Rule	Egypt	2054	only	-	May	14	24:00	1:00	S
+-Rule	Egypt	2055	max	-	Apr	lastThu	24:00	1:00	S
+ 
+ # Zone	NAME		GMTOFF	RULES	FORMAT	[UNTIL]
+ Zone	Africa/Cairo	2:05:09 -	LMT	1900 Oct
+diff --git a/share/zoneinfo/europe b/share/zoneinfo/europe
+index 7e43bc2..cd3a088 100644
+--- a/share/zoneinfo/europe
++++ b/share/zoneinfo/europe
+@@ -755,6 +755,14 @@ Zone	Europe/Vienna	1:05:21 -	LMT	1893 Apr
+ 			1:00	EU	CE%sT
+ 
+ # Belarus
++#
++# From Stepan Golosunov (2016-07-02):
++# http://www.lawbelarus.com/repub/sub30/texf9611.htm
++# (Act of the Cabinet of Ministers of the Republic of Belarus from
++# 1992-03-25 No. 157) ... says clocks were to be moved forward at 2:00
++# on last Sunday of March and backward at 3:00 on last Sunday of September
++# (the same as previous USSR and contemporary Russian regulations).
++#
+ # From Yauhen Kharuzhy (2011-09-16):
+ # By latest Belarus government act Europe/Minsk timezone was changed to
+ # GMT+3 without DST (was GMT+2 with DST).
+@@ -778,9 +786,6 @@ Zone	Europe/Minsk	1:50:16 -	LMT	1880
+ 			1:00	C-Eur	CE%sT	1944 Jul  3
+ 			3:00	Russia	MSK/MSD	1990
+ 			3:00	-	MSK	1991 Mar 31  2:00s
+-			2:00	1:00	EEST	1991 Sep 29  2:00s
+-			2:00	-	EET	1992 Mar 29  0:00s
+-			2:00	1:00	EEST	1992 Sep 27  0:00s
+ 			2:00	Russia	EE%sT	2011 Mar 27  2:00s
+ 			3:00	-	FET	2014 Oct 26  1:00s
+ 			3:00	-	MSK
+@@ -2723,14 +2728,22 @@ Zone Asia/Barnaul	 5:35:00 -	LMT	1919 Dec 10
+ # Asia/Novosibirsk covers:
+ # 54	RU-NVS	Novosibirsk Oblast
+ 
++# From Stepan Golosunov (2016-05-30):
++# http://asozd2.duma.gov.ru/main.nsf/(Spravka)?OpenAgent&RN=1085784-6
++# moves Novosibirsk oblast from UTC+6 to UTC+7.
++# From Stepan Golosunov (2016-07-04):
++# The law was signed yesterday and published today on
++# http://publication.pravo.gov.ru/Document/View/0001201607040064
++
+ Zone Asia/Novosibirsk	 5:31:40 -	LMT	1919 Dec 14  6:00
+-			 6:00	-	NOVT	1930 Jun 21 # Novosibirsk Time
+-			 7:00	Russia	NOV%sT	1991 Mar 31  2:00s
+-			 6:00	Russia	NOV%sT	1992 Jan 19  2:00s
+-			 7:00	Russia	NOV%sT	1993 May 23 # say Shanks & P.
+-			 6:00	Russia	NOV%sT	2011 Mar 27  2:00s
+-			 7:00	-	NOVT	2014 Oct 26  2:00s
+-			 6:00	-	NOVT
++			 6:00	-	+06	1930 Jun 21
++			 7:00	Russia	+07/+08	1991 Mar 31  2:00s
++			 6:00	Russia	+06/+07	1992 Jan 19  2:00s
++			 7:00	Russia	+07/+08	1993 May 23 # say Shanks & P.
++			 6:00	Russia	+06/+07	2011 Mar 27  2:00s
++			 7:00	-	+07	2014 Oct 26  2:00s
++			 6:00	-	+06	2016 Jul 24  2:00s
++			 7:00	-	+07
+ 
+ # From Paul Eggert (2016-03-18):
+ # Asia/Tomsk covers:
+@@ -2813,14 +2826,12 @@ Zone	Asia/Tomsk	 5:39:51 -	LMT	1919 Dec 22
+ # realigning itself with KRAT.
+ 
+ Zone Asia/Novokuznetsk	 5:48:48 -	LMT	1924 May  1
+-			 6:00	-	KRAT	1930 Jun 21 # Krasnoyarsk Time
+-			 7:00	Russia	KRA%sT	1991 Mar 31  2:00s
+-			 6:00	Russia	KRA%sT	1992 Jan 19  2:00s
+-			 7:00	Russia	KRA%sT	2010 Mar 28  2:00s
+-			 6:00	Russia	NOV%sT	2011 Mar 27  2:00s # Novosibirsk
+-			 7:00	-	NOVT	2014 Oct 26  2:00s
+-			 7:00	-	KRAT	# Krasnoyarsk Time
+-
++			 6:00	-	+06	1930 Jun 21
++			 7:00	Russia	+07/+08	1991 Mar 31  2:00s
++			 6:00	Russia	+06/+07	1992 Jan 19  2:00s
++			 7:00	Russia	+07/+08	2010 Mar 28  2:00s
++			 6:00	Russia	+06/+07	2011 Mar 27  2:00s
++			 7:00	-	+07
+ 
+ # From Tim Parenti (2014-07-03), per Oscar van Vlijmen (2001-08-25):
+ # Asia/Krasnoyarsk covers...
+-- 
+2.7.2
+

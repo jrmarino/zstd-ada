@@ -1,0 +1,80 @@
+From cdc70ef7c987bc2e1b321123ca6a5d0d742d5fd4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Sun, 17 Jul 2016 08:18:11 +0200
+Subject: [PATCH 001/100] drm/linux: Implement writex() functions
+
+---
+ sys/dev/drm/include/asm/io.h   | 28 ++++++++++++++++++++++++++++
+ sys/dev/drm/include/linux/io.h | 12 +-----------
+ 2 files changed, 29 insertions(+), 11 deletions(-)
+
+diff --git a/sys/dev/drm/include/asm/io.h b/sys/dev/drm/include/asm/io.h
+index a9d93ae..60fc3ef 100644
+--- a/sys/dev/drm/include/asm/io.h
++++ b/sys/dev/drm/include/asm/io.h
+@@ -34,6 +34,34 @@
+ #include <linux/types.h>
+ #include <asm/page.h>
+ 
++#undef writeb
++static inline void
++writeb(u8 value, volatile void __iomem *addr)
++{
++	*(volatile uint8_t *)addr = value;
++}
++
++#undef writew
++static inline void
++writew(u16 value, volatile void __iomem *addr)
++{
++	*(volatile uint16_t *)addr = value;
++}
++
++#undef writel
++static inline void
++writel(u32 value, volatile void __iomem *addr)
++{
++	*(volatile uint32_t *)addr = value;
++}
++
++#undef writeq
++static inline void
++writeq(u64 value, volatile void __iomem *addr)
++{
++	*(volatile uint64_t *)addr = value;
++}
++
+ #define ioread8(addr)		*(volatile uint8_t *)((char *)addr)
+ #define ioread16(addr)		*(volatile uint16_t *)((char *)addr)
+ #define ioread32(addr)		*(volatile uint32_t *)((char *)addr)
+diff --git a/sys/dev/drm/include/linux/io.h b/sys/dev/drm/include/linux/io.h
+index 60ec490..89d39d9 100644
+--- a/sys/dev/drm/include/linux/io.h
++++ b/sys/dev/drm/include/linux/io.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2014-2015 François Tigeot
++ * Copyright (c) 2014-2016 François Tigeot
+  * All rights reserved.
+  *
+  * Redistribution and use in source and binary forms, with or without
+@@ -32,16 +32,6 @@
+ #include <asm/io.h>
+ #include <asm/page.h>
+ 
+-#if defined(writel)
+-#undef writel
+-#endif
+-
+-static inline void
+-writel(uint32_t value, volatile void *addr)
+-{
+-	*(volatile uint32_t *)addr = value;
+-}
+-
+ static inline int
+ arch_phys_wc_add(unsigned long base, unsigned long size)
+ {
+-- 
+2.7.2
+

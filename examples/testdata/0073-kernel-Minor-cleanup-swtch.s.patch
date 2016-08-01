@@ -1,0 +1,61 @@
+From 405f56bcef5bcb63a180caa91d93cc155d544bf3 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Tue, 26 Jul 2016 13:12:51 -0700
+Subject: [PATCH 073/100] kernel - Minor cleanup swtch.s
+
+* Minor cleanup
+---
+ sys/platform/pc64/x86_64/swtch.s | 12 +-----------
+ 1 file changed, 1 insertion(+), 11 deletions(-)
+
+diff --git a/sys/platform/pc64/x86_64/swtch.s b/sys/platform/pc64/x86_64/swtch.s
+index b2a122f..a4e3239 100644
+--- a/sys/platform/pc64/x86_64/swtch.s
++++ b/sys/platform/pc64/x86_64/swtch.s
+@@ -142,9 +142,6 @@ ENTRY(cpu_heavy_switch)
+ 	jz	1f
+ 	cmpq	LWP_VMSPACE(%r13),%rcx		/* same vmspace? */
+ 	je	2f
+-#if CPUMASK_ELEMENTS != 4
+-#error "assembly incompatible with cpumask_t"
+-#endif
+ 1:
+ 	movq	PCPU(cpumask_simple),%rsi
+ 	movq	PCPU(cpumask_offset),%r12
+@@ -237,11 +234,9 @@ ENTRY(cpu_exit_switch)
+ 	 */
+ 	movq	KPML4phys,%rcx
+ 	movq	%cr3,%rax
+-#if 1
+ 	cmpq	%rcx,%rax
+ 	je	1f
+-#endif
+-	/* JG no increment of statistics counters? see cpu_heavy_restore */
++
+ 	movq	%rcx,%cr3
+ 1:
+ 	movq	PCPU(curthread),%rbx
+@@ -325,9 +320,6 @@ ENTRY(cpu_heavy_restore)
+ 	movq	TD_LWP(%rax),%rcx
+ 	movq	LWP_VMSPACE(%rcx),%rcx		/* RCX = vmspace */
+ 
+-#if CPUMASK_ELEMENTS != 4
+-#error "assembly incompatible with cpumask_t"
+-#endif
+ 	movq	PCPU(cpumask_simple),%rsi
+ 	movq	PCPU(cpumask_offset),%r12
+ 	MPLOCKED orq %rsi, VM_PMAP+PM_ACTIVE(%rcx, %r12, 1)
+@@ -749,10 +741,8 @@ ENTRY(cpu_lwkt_switch)
+ ENTRY(cpu_lwkt_restore)
+ 	movq	KPML4phys,%rcx	/* YYY borrow but beware desched/cpuchg/exit */
+ 	movq	%cr3,%rdx
+-#if 1
+ 	cmpq	%rcx,%rdx
+ 	je	1f
+-#endif
+ 	movq	%rcx,%cr3
+ 1:
+ 	/*
+-- 
+2.7.2
+

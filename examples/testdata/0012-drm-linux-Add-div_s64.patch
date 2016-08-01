@@ -1,0 +1,28 @@
+From 0a8d41c24288d771ea159eb3b4499905f6479e0e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Wed, 20 Jul 2016 00:23:35 +0200
+Subject: [PATCH 012/100] drm/linux: Add div_s64()
+
+---
+ sys/dev/drm/include/linux/math64.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/sys/dev/drm/include/linux/math64.h b/sys/dev/drm/include/linux/math64.h
+index 1356958..d91c7e6 100644
+--- a/sys/dev/drm/include/linux/math64.h
++++ b/sys/dev/drm/include/linux/math64.h
+@@ -65,4 +65,11 @@ div_u64(uint64_t dividend, uint32_t divisor)
+ 	return (dividend / divisor);
+ }
+ 
++static inline int64_t
++div_s64(int64_t dividend, int32_t divisor)
++{
++	return (dividend / divisor);
++}
++
++
+ #endif					/* _LINUX_MATH64_H */
+-- 
+2.7.2
+

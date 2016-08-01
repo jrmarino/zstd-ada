@@ -1,0 +1,298 @@
+From 33ee48c40cdb9dc1074a60d2a003c9ea1db0533e Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Fri, 29 Jul 2016 17:03:22 -0700
+Subject: [PATCH 093/100] kernel - Refactor cpu localization for VM page
+ allocations
+
+* Change how cpu localization works.  The old scheme was extremely unbalanced
+  in terms of vm_page_queue[] load.
+
+  The new scheme uses cpu topology information to break the vm_page_queue[]
+  down into major blocks based on the physical package id, minor blocks
+  based on the core id in each physical package, and then by 1's based on
+  (pindex + object->pg_color).
+
+  If PQ_L2_SIZE is not big enough such that 16-way operation is attainable
+  by physical and core id, we break the queue down only by physical id.
+
+  Note that the core id is a real core count, not a cpu thread count, so
+  an 8-core/16-thread x 2 socket xeon system will just fit in the 16-way
+  requirement (there are 256 PQ_FREE queues).
+
+* When a particular queue does not have a free page, iterate nearby queues
+  start at +/- 1 (before we started at +/- PQ_L2_SIZE/2), in an attempt to
+  retain as much locality as possible.  This won't be perfect but it should
+  be good enough.
+
+* Also fix an issue with the idlezero counters.
+---
+ sys/kern/subr_cpu_topology.c | 26 ++++++++++++++++++
+ sys/sys/cpu_topology.h       |  4 +++
+ sys/sys/globaldata.h         |  3 ++-
+ sys/vm/vm_object.c           | 16 +++++++++--
+ sys/vm/vm_page.c             | 63 +++++++++++++++++++++++++++++++++++++-------
+ 5 files changed, 100 insertions(+), 12 deletions(-)
+
+diff --git a/sys/kern/subr_cpu_topology.c b/sys/kern/subr_cpu_topology.c
+index d5babed..1d883c4 100644
+--- a/sys/kern/subr_cpu_topology.c
++++ b/sys/kern/subr_cpu_topology.c
+@@ -68,10 +68,16 @@ static per_cpu_sysctl_info_t *pcpu_sysctl;
+ static void sbuf_print_cpuset(struct sbuf *sb, cpumask_t *mask);
+ 
+ int cpu_topology_levels_number = 1;
++int cpu_topology_core_ids;
++int cpu_topology_phys_ids;
+ cpu_node_t *root_cpu_node;
+ 
+ MALLOC_DEFINE(M_PCPUSYS, "pcpusys", "pcpu sysctl topology");
+ 
++SYSCTL_INT(_hw, OID_AUTO, cpu_topology_core_ids, CTLFLAG_RW,
++	   &cpu_topology_core_ids, 0, "# of real cores per package");
++SYSCTL_INT(_hw, OID_AUTO, cpu_topology_phys_ids, CTLFLAG_RW,
++	   &cpu_topology_phys_ids, 0, "# of physical packages");
+ 
+ /* Get the next valid apicid starting
+  * from current apicid (curr_apicid
+@@ -561,6 +567,8 @@ init_pcpu_topology_sysctl(void)
+ 		sbuf_finish(&sb);
+ 
+ 		pcpu_sysctl[i].physical_id = get_chip_ID(i); 
++		if (cpu_topology_phys_ids < pcpu_sysctl[i].physical_id)
++			cpu_topology_phys_ids = pcpu_sysctl[i].physical_id + 1;
+ 
+ 		/* Get core siblings */
+ 		mask = get_cpumask_from_level(i, CORE_LEVEL);
+@@ -576,6 +584,8 @@ init_pcpu_topology_sysctl(void)
+ 		sbuf_finish(&sb);
+ 
+ 		pcpu_sysctl[i].core_id = get_core_number_within_chip(i);
++		if (cpu_topology_core_ids < pcpu_sysctl[i].core_id)
++			cpu_topology_core_ids = pcpu_sysctl[i].core_id + 1;
+ 
+ 	}
+ }
+@@ -716,6 +726,22 @@ sbuf_print_cpuset(struct sbuf *sb, cpumask_t *mask)
+ 	sbuf_printf(sb, ") ");
+ }
+ 
++int
++get_cpu_core_id(int cpuid)
++{
++	if (pcpu_sysctl)
++		return(pcpu_sysctl[cpuid].core_id);
++	return(0);
++}
++
++int
++get_cpu_phys_id(int cpuid)
++{
++	if (pcpu_sysctl)
++		return(pcpu_sysctl[cpuid].physical_id);
++	return(0);
++}
++
+ /* Build the CPU Topology and SYSCTL Topology tree */
+ static void
+ init_cpu_topology(void)
+diff --git a/sys/sys/cpu_topology.h b/sys/sys/cpu_topology.h
+index 5731450..0cfdd56 100644
+--- a/sys/sys/cpu_topology.h
++++ b/sys/sys/cpu_topology.h
+@@ -17,11 +17,15 @@ struct cpu_node {
+ typedef struct cpu_node cpu_node_t;
+ 
+ extern int cpu_topology_levels_number;
++extern int cpu_topology_core_ids;
++extern int cpu_topology_phys_ids;
+ extern cpu_node_t *root_cpu_node;
+ 
+ cpumask_t get_cpumask_from_level(int cpuid, uint8_t level_type);
+ cpu_node_t *get_cpu_node_by_cpuid(int cpuid);
+ const cpu_node_t *get_cpu_node_by_chipid(int chip_id);
++int get_cpu_core_id(int cpuid);
++int get_cpu_phys_id(int cpuid);
+ 
+ #define LEVEL_NO 4
+ 
+diff --git a/sys/sys/globaldata.h b/sys/sys/globaldata.h
+index 1a4ef89..091cbbb 100644
+--- a/sys/sys/globaldata.h
++++ b/sys/sys/globaldata.h
+@@ -167,7 +167,8 @@ struct globaldata {
+ 	struct systimer	*gd_systimer_inprog;	/* in-progress systimer */
+ 	int		gd_timer_running;
+ 	u_int		gd_idle_repeat;		/* repeated switches to idle */
+-	int		gd_ireserved[7];
++	int		gd_quick_color;		/* page-coloring helper */
++	int		gd_ireserved[6];
+ 	const char	*gd_infomsg;		/* debugging */
+ 	struct lwkt_tokref gd_handoff;		/* hand-off tokref */
+ 	void		*gd_delayed_wakeup[2];
+diff --git a/sys/vm/vm_object.c b/sys/vm/vm_object.c
+index bfc01eb..4abccd4 100644
+--- a/sys/vm/vm_object.c
++++ b/sys/vm/vm_object.c
+@@ -250,6 +250,18 @@ vm_object_assert_held(vm_object_t obj)
+ 	ASSERT_LWKT_TOKEN_HELD(&obj->token);
+ }
+ 
++static __inline int
++vm_quickcolor(void)
++{
++	globaldata_t gd = mycpu;
++	int pg_color;
++
++	pg_color = (int)(intptr_t)gd->gd_curthread >> 10;
++	pg_color += ++gd->gd_quick_color;
++
++	return pg_color;
++}
++
+ void
+ VMOBJDEBUG(vm_object_hold)(vm_object_t obj VMOBJDBARGS)
+ {
+@@ -379,7 +391,7 @@ _vm_object_allocate(objtype_t type, vm_pindex_t size, vm_object_t object)
+ 	object->agg_pv_list_count = 0;
+ 	object->shadow_count = 0;
+ 	/* cpu localization twist */
+-	object->pg_color = (int)(intptr_t)curthread;
++	object->pg_color = vm_quickcolor();
+ 	if ( size > (PQ_L2_SIZE / 3 + PQ_PRIME1))
+ 		incr = PQ_L2_SIZE / 3 + PQ_PRIME1;
+ 	else
+@@ -1937,7 +1949,7 @@ vm_object_shadow(vm_object_t *objectp, vm_ooffset_t *offset, vm_size_t length,
+ 			vm_object_set_flag(result, OBJ_ONSHADOW);
+ 		}
+ 		/* cpu localization twist */
+-		result->pg_color = (int)(intptr_t)curthread;
++		result->pg_color = vm_quickcolor();
+ 	}
+ 
+ 	/*
+diff --git a/sys/vm/vm_page.c b/sys/vm/vm_page.c
+index 6b5af7a..54fb36c 100644
+--- a/sys/vm/vm_page.c
++++ b/sys/vm/vm_page.c
+@@ -75,6 +75,7 @@
+ #include <sys/kernel.h>
+ #include <sys/alist.h>
+ #include <sys/sysctl.h>
++#include <sys/cpu_topology.h>
+ 
+ #include <vm/vm.h>
+ #include <vm/vm_param.h>
+@@ -659,6 +660,7 @@ _vm_page_rem_queue_spinlocked(vm_page_t m)
+ {
+ 	struct vpgqueues *pq;
+ 	u_short queue;
++	u_short oqueue;
+ 
+ 	queue = m->queue;
+ 	if (queue != PQ_NONE) {
+@@ -667,11 +669,12 @@ _vm_page_rem_queue_spinlocked(vm_page_t m)
+ 		atomic_add_int(pq->cnt, -1);
+ 		pq->lcnt--;
+ 		m->queue = PQ_NONE;
+-		vm_page_queues_spin_unlock(queue);
++		oqueue = queue;
+ 		if ((queue - m->pc) == PQ_FREE && (m->flags & PG_ZERO))
+ 			--pq->zero_count;
+ 		if ((queue - m->pc) == PQ_CACHE || (queue - m->pc) == PQ_FREE)
+-			return (queue - m->pc);
++			queue -= m->pc;
++		vm_page_queues_spin_unlock(oqueue);	/* intended */
+ 	}
+ 	return queue;
+ }
+@@ -1365,8 +1368,10 @@ _vm_page_list_find2(int basequeue, int index)
+ 	 * Note that for the first loop, index+i and index-i wind up at the
+ 	 * same place.  Even though this is not totally optimal, we've already
+ 	 * blown it by missing the cache case so we do not care.
++	 *
++	 * NOTE: Fan out from our starting index for localization purposes.
+ 	 */
+-	for (i = PQ_L2_SIZE / 2; i > 0; --i) {
++	for (i = 1; i <= PQ_L2_SIZE / 2; ++i) {
+ 		for (;;) {
+ 			m = TAILQ_FIRST(&pq[(index + i) & PQ_L2_MASK].pl);
+ 			if (m) {
+@@ -1595,6 +1600,9 @@ vm_page_alloc(vm_object_t object, vm_pindex_t pindex, int page_req)
+ 	vm_object_t obj;
+ 	vm_page_t m;
+ 	u_short pg_color;
++	int phys_id;
++	int core_id;
++	int object_pg_color;
+ 
+ #if 0
+ 	/*
+@@ -1614,14 +1622,50 @@ vm_page_alloc(vm_object_t object, vm_pindex_t pindex, int page_req)
+ 	m = NULL;
+ 
+ 	/*
+-	 * Cpu twist - cpu localization algorithm
++	 * CPU LOCALIZATION
++	 *
++	 * CPU localization algorithm.  Break the page queues up by physical
++	 * id and core id (note that two cpu threads will have the same core
++	 * id, and core_id != gd_cpuid).
++	 *
++	 * This is nowhere near perfect, for example the last pindex in a
++	 * subgroup will overflow into the next cpu or package.  But this
++	 * should get us good page reuse locality in heavy mixed loads.
+ 	 */
+-	if (object) {
+-		pg_color = gd->gd_cpuid + (pindex & ~ncpus_fit_mask) +
+-			   (object->pg_color & ~ncpus_fit_mask);
++	phys_id = get_cpu_phys_id(gd->gd_cpuid);
++	core_id = get_cpu_core_id(gd->gd_cpuid);
++	object_pg_color = object ? object->pg_color : 0;
++
++	if (cpu_topology_phys_ids && cpu_topology_core_ids) {
++		if (PQ_L2_SIZE / ncpus >= 16) {
++			/*
++			 * Enough space for a full break-down.
++			 */
++			pg_color = PQ_L2_SIZE * core_id /
++				   cpu_topology_core_ids;
++			pg_color += PQ_L2_SIZE * phys_id *
++				    cpu_topology_core_ids /
++				    cpu_topology_phys_ids;
++			pg_color += (pindex + object_pg_color) %
++				    (PQ_L2_SIZE / (cpu_topology_core_ids *
++						   cpu_topology_phys_ids));
++		} else {
++			/*
++			 * Hopefully enough space to at least break the
++			 * queues down by package id.
++			 */
++			pg_color = PQ_L2_SIZE * phys_id / cpu_topology_phys_ids;
++			pg_color += (pindex + object_pg_color) %
++				    (PQ_L2_SIZE / cpu_topology_phys_ids);
++		}
+ 	} else {
+-		pg_color = gd->gd_cpuid + (pindex & ~ncpus_fit_mask);
++		/*
++		 * Unknown topology, distribute things evenly.
++		 */
++		pg_color = gd->gd_cpuid * PQ_L2_SIZE / ncpus;
++		pg_color += pindex + object_pg_color;
+ 	}
++
+ 	KKASSERT(page_req & 
+ 		(VM_ALLOC_NORMAL|VM_ALLOC_QUICK|
+ 		 VM_ALLOC_INTERRUPT|VM_ALLOC_SYSTEM));
+@@ -2201,7 +2245,8 @@ vm_page_free_fromq_fast(void)
+ 				vm_page_spin_unlock(m);
+ 			} else if (m->flags & PG_ZERO) {
+ 				/*
+-				 * The page is already PG_ZERO, requeue it and loop
++				 * The page is already PG_ZERO, requeue it
++				 * and loop.
+ 				 */
+ 				_vm_page_add_queue_spinlocked(m,
+ 							      PQ_FREE + m->pc,
+-- 
+2.7.2
+

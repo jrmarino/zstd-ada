@@ -1,0 +1,60 @@
+From e405f42bc0c0adfa19d17497c3222c73accafda9 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sat, 23 Jul 2016 19:09:26 -0700
+Subject: [PATCH 050/100] hammer - Try to fix improper DATA CRC error
+
+* Under heavy I/O loads HAMMER has an optimization (similar to UFS) where
+  the logical buffer is used to issue a write to the underlying device,
+  rather than copying the logical buffer to a device buffer.  This
+  optmization is earmarked by a hammer2_record.
+
+* If the logical buffer is discarded just after it is written, and then
+  re-read, hammer may go through a path which calls
+  hammer_ip_resolve_data().  This code failed to check whether the record
+  was still in-progress, and in-fact the write to the device may not have
+  even been initiated yet, and there could also have been a device buffer
+  alias in the buffer cache for the device for the offset.
+
+  This caused the followup read to access the wrong data, causing HAMMER
+  to report a DATA CRC error.  The actual media receives the correct data
+  eventually and a umount/remount would show an uncorrupted file.
+
+* Try to fix the problem by calling hammer_io_direct_wait() on the record
+  in this path to wait for the operation to complete (and also to
+  invalidate the related device buffer) before trying to re-read the block
+  from the media.
+---
+ sys/vfs/hammer/hammer_object.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/sys/vfs/hammer/hammer_object.c b/sys/vfs/hammer/hammer_object.c
+index b2310ef..f6e7857 100644
+--- a/sys/vfs/hammer/hammer_object.c
++++ b/sys/vfs/hammer/hammer_object.c
+@@ -1890,13 +1890,21 @@ hammer_ip_resolve_data(hammer_cursor_t cursor)
+ 		 * on-disk reference.
+ 		 *
+ 		 * NOTE: Reserve-ahead data records must be handled in the
+-		 * context of the related high level buffer cache buffer
+-		 * to interlock against async writes.
++		 *	 context of the related high level buffer cache buffer
++		 *	 to interlock against async writes.
++		 *
++		 * NOTE: We might catch a direct write in-progress, in which
++		 *	 case we must wait for it to complete.  The wait
++		 *	 function will also clean out any buffer aliases.
++		 *
++		 *	 (In fact, it is possible that the write had not
++		 *	  even started yet).
+ 		 */
+ 		record = cursor->iprec;
+ 		cursor->data = record->data;
+ 		error = 0;
+ 		if (cursor->data == NULL) {
++			hammer_io_direct_wait(record);
+ 			KKASSERT(record->leaf.base.rec_type ==
+ 				 HAMMER_RECTYPE_DATA);
+ 			cursor->data = hammer_bread_ext(cursor->trans->hmp,
+-- 
+2.7.2
+

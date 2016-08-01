@@ -1,0 +1,60 @@
+From ce8b4ec1002660c86858e2e6b18c6ea6cdb5c879 Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Tue, 19 Jul 2016 19:35:16 +0300
+Subject: [PATCH 055/100] cpumask.h: Turn CPUMASK_ELEMENTS as implementation
+ defined.
+
+No functional change intended.
+---
+ sys/cpu/x86_64/include/cpumask.h | 4 +++-
+ sys/cpu/x86_64/include/param.h   | 2 +-
+ sys/cpu/x86_64/include/types.h   | 2 +-
+ 3 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/sys/cpu/x86_64/include/cpumask.h b/sys/cpu/x86_64/include/cpumask.h
+index 782031a..b1b3d5e 100644
+--- a/sys/cpu/x86_64/include/cpumask.h
++++ b/sys/cpu/x86_64/include/cpumask.h
+@@ -38,10 +38,12 @@
+ #include <cpu/types.h>
+ #include <cpu/atomic.h>
+ 
+-#if CPUMASK_ELEMENTS != 4
++#if _CPUMASK_ELEMENTS != 4
+ #error "CPUMASK macros incompatible with cpumask_t"
+ #endif
+ 
++#define CPUMASK_ELEMENTS	_CPUMASK_ELEMENTS
++
+ #define CPUMASK_INITIALIZER_ALLONES	{ .ary = { (__uint64_t)-1, \
+ 					  (__uint64_t)-1, \
+ 					  (__uint64_t)-1, \
+diff --git a/sys/cpu/x86_64/include/param.h b/sys/cpu/x86_64/include/param.h
+index 26f5587..23372dc 100644
+--- a/sys/cpu/x86_64/include/param.h
++++ b/sys/cpu/x86_64/include/param.h
+@@ -72,7 +72,7 @@
+  * remain compatible between UP and SMP builds.
+  *
+  * WARNING!  CPUMASK macros in include/cpumask.h must also be adjusted,
+- *	     as well as any assembly.  Be sure that CPUMASK_ELEMENTS
++ *	     as well as any assembly.  Be sure that _CPUMASK_ELEMENTS
+  *	     is always correct so incompatible assembly #error's out
+  *	     during the kernel compile.
+  *
+diff --git a/sys/cpu/x86_64/include/types.h b/sys/cpu/x86_64/include/types.h
+index b1b459b..c8e1104 100644
+--- a/sys/cpu/x86_64/include/types.h
++++ b/sys/cpu/x86_64/include/types.h
+@@ -77,7 +77,7 @@ typedef __uint32_t      cpulock_t;      /* count and exclusive lock */
+  *	    whole mask.
+  */
+ 
+-#define CPUMASK_ELEMENTS	4	/* tested by assembly for #error */
++#define _CPUMASK_ELEMENTS	4	/* tested by assembly for #error */
+ 
+ typedef struct {
+ 	__uint64_t      ary[4];
+-- 
+2.7.2
+

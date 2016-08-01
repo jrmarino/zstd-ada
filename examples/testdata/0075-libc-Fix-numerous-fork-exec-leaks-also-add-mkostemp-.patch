@@ -1,0 +1,549 @@
+From 5270936ced7738caef7b7302e4b02466f8e913bc Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Wed, 27 Jul 2016 11:13:44 -0700
+Subject: [PATCH 075/100] libc - Fix numerous fork/exec*() leaks, also add
+ mkostemp() and mkostemps().
+
+* Use O_CLOEXEC in many places to prevent temporary descriptors from leaking
+  into fork/exec'd code (e.g. in multi-threaded situations).
+
+* Note that the popen code will close any other popen()'d descriptors in
+  the child process that it forks just prior to exec.  However, there was
+  a descriptor leak where another thread issuing popen() at the same time
+  could leak the descriptors into their exec.
+
+  Use O_CLOEXEC to close this hole.
+
+* popen() now accepts the 'e' flag (i.e. "re") to retain O_CLOEXEC in the
+  returned descriptor.  Normal "r" (etc) will clear O_CLOEXEC in the returned
+  descriptor.
+
+  Note that normal "r" modes are still fine for most use cases since popen
+  properly closes other popen()d descriptors in the fork().  BUT!! If the
+  threaded program calls exec*() in other ways, such descriptors may
+  unintentionally be passed onto sub-processes.  So consider using "re".
+
+* Add mkostemp() and mkostemps() to allow O_CLOEXEC to be passed in,
+  closing a thread race that would otherwise leak the temporary descriptor
+  into other fork/exec()s.
+
+Taken-from: Mostly taken from FreeBSD
+---
+ include/stdlib.h              |  2 ++
+ lib/libc/db/btree/bt_open.c   |  5 +++--
+ lib/libc/db/db/db.c           |  2 +-
+ lib/libc/db/hash/hash.c       |  2 +-
+ lib/libc/db/hash/hash_page.c  |  3 ++-
+ lib/libc/db/recno/rec_open.c  |  2 +-
+ lib/libc/gen/arc4random.c     |  2 +-
+ lib/libc/gen/getcap.c         |  2 +-
+ lib/libc/gen/nlist.c          |  2 +-
+ lib/libc/gen/popen.c          | 17 ++++++++++++++---
+ lib/libc/gen/readpassphrase.c |  2 +-
+ lib/libc/gen/syslog.c         |  2 +-
+ lib/libc/gen/wordexp.c        |  4 +++-
+ lib/libc/gmon/gmon.c          |  4 ++--
+ lib/libc/stdio/Symbol.map     |  5 +++++
+ lib/libc/stdio/fdopen.c       |  4 ++++
+ lib/libc/stdio/freopen.c      | 16 +++++++++++++---
+ lib/libc/stdio/mktemp.3       | 22 ++++++++++++++++++++++
+ lib/libc/stdio/mktemp.c       | 33 +++++++++++++++++++++++++++------
+ lib/libc/yp/yplib.c           |  2 +-
+ 20 files changed, 106 insertions(+), 27 deletions(-)
+
+diff --git a/include/stdlib.h b/include/stdlib.h
+index 949ed96..8a4e1e4 100644
+--- a/include/stdlib.h
++++ b/include/stdlib.h
+@@ -282,6 +282,8 @@ const char *
+ int	 heapsort(void *, size_t, size_t, int (*)(const void *, const void *));
+ int	 l64a_r(long, char *, int);
+ int	 mergesort(void *, size_t, size_t, int (*)(const void *, const void *));
++int	 mkostemp(char *, int);
++int	 mkostemps(char *, int, int);
+ void	 qsort_r(void *, size_t, size_t, void *,
+ 		 int (*)(void *, const void *, const void *));
+ int	 radixsort(const unsigned char **, int, const unsigned char *,
+diff --git a/lib/libc/db/btree/bt_open.c b/lib/libc/db/btree/bt_open.c
+index 9e25674..7dde1c8 100644
+--- a/lib/libc/db/btree/bt_open.c
++++ b/lib/libc/db/btree/bt_open.c
+@@ -44,6 +44,7 @@
+ #include "namespace.h"
+ #include <sys/param.h>
+ #include <sys/stat.h>
++#include <sys/file.h>
+ 
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -194,7 +195,7 @@ __bt_open(const char *fname, int flags, mode_t mode, const BTREEINFO *openinfo,
+ 			goto einval;
+ 		}
+ 
+-		if ((t->bt_fd = _open(fname, flags, mode)) < 0)
++		if ((t->bt_fd = _open(fname, flags | O_CLOEXEC, mode)) < 0)
+ 			goto err;
+ 
+ 	} else {
+@@ -403,7 +404,7 @@ tmp(void)
+ 
+ 	sigfillset(&set);
+ 	_sigprocmask(SIG_BLOCK, &set, &oset);
+-	if ((fd = mkstemp(path)) != -1)
++	if ((fd = mkostemp(path, O_CLOEXEC)) != -1)
+ 		unlink(path);
+ 	_sigprocmask(SIG_SETMASK, &oset, NULL);
+ 	return(fd);
+diff --git a/lib/libc/db/db/db.c b/lib/libc/db/db/db.c
+index c6ec6af..21bd9a6 100644
+--- a/lib/libc/db/db/db.c
++++ b/lib/libc/db/db/db.c
+@@ -48,7 +48,7 @@ dbopen(const char *fname, int flags, mode_t mode, DBTYPE type, const void *openi
+ #define	DB_FLAGS	(DB_LOCK | DB_SHMEM | DB_TXN)
+ #define	USE_OPEN_FLAGS							\
+ 	(O_CREAT | O_EXCL | O_EXLOCK | O_NOFOLLOW | O_NONBLOCK | 	\
+-	 O_RDONLY | O_RDWR | O_SHLOCK | O_SYNC | O_TRUNC)
++	 O_RDONLY | O_RDWR | O_SHLOCK | O_SYNC | O_TRUNC | O_CLOEXEC)
+ 
+ 	if ((flags & ~(USE_OPEN_FLAGS | DB_FLAGS)) == 0)
+ 		switch (type) {
+diff --git a/lib/libc/db/hash/hash.c b/lib/libc/db/hash/hash.c
+index abf5c79..06315e5 100644
+--- a/lib/libc/db/hash/hash.c
++++ b/lib/libc/db/hash/hash.c
+@@ -118,7 +118,7 @@ __hash_open(const char *file, int flags, mode_t mode,
+ 	hashp->flags = flags;
+ 
+ 	if (file) {
+-		if ((hashp->fp = _open(file, flags, mode)) == -1)
++		if ((hashp->fp = _open(file, flags | O_CLOEXEC, mode)) == -1)
+ 			RETURN_ERROR(errno, error0);
+ 		_fcntl(hashp->fp, F_SETFD, 1);
+ 		new_table = _fstat(hashp->fp, &statbuf) == 0 &&
+diff --git a/lib/libc/db/hash/hash_page.c b/lib/libc/db/hash/hash_page.c
+index a784940..7475898 100644
+--- a/lib/libc/db/hash/hash_page.c
++++ b/lib/libc/db/hash/hash_page.c
+@@ -51,6 +51,7 @@
+ 
+ #include "namespace.h"
+ #include <sys/param.h>
++#include <sys/file.h>
+ 
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -859,7 +860,7 @@ open_temp(HTAB *hashp)
+ 	/* Block signals; make sure file goes away at process exit. */
+ 	sigfillset(&set);
+ 	_sigprocmask(SIG_BLOCK, &set, &oset);
+-	if ((hashp->fp = mkstemp(path)) != -1) {
++	if ((hashp->fp = mkostemp(path, O_CLOEXEC)) != -1) {
+ 		unlink(path);
+ 		_fcntl(hashp->fp, F_SETFD, 1);
+ 	}
+diff --git a/lib/libc/db/recno/rec_open.c b/lib/libc/db/recno/rec_open.c
+index 3b8f8cb..fab217c 100644
+--- a/lib/libc/db/recno/rec_open.c
++++ b/lib/libc/db/recno/rec_open.c
+@@ -61,7 +61,7 @@ __rec_open(const char *fname, int flags, mode_t mode, const RECNOINFO *openinfo,
+ 	int rfd, sverrno;
+ 
+ 	/* Open the user's file -- if this fails, we're done. */
+-	if (fname != NULL && (rfd = _open(fname, flags, mode)) < 0)
++	if (fname != NULL && (rfd = _open(fname, flags | O_CLOEXEC, mode)) < 0)
+ 		return (NULL);
+ 
+ 	/* Create a btree in memory (backed by disk). */
+diff --git a/lib/libc/gen/arc4random.c b/lib/libc/gen/arc4random.c
+index 680a575..c7dbcdb 100644
+--- a/lib/libc/gen/arc4random.c
++++ b/lib/libc/gen/arc4random.c
+@@ -126,7 +126,7 @@ arc4_stir(void)
+ 	 *	 random.
+ 	 */
+ 	n = 0;
+-	fd = _open(RANDOMDEV, O_RDONLY, 0);
++	fd = _open(RANDOMDEV, O_RDONLY | O_CLOEXEC, 0);
+ 	if (fd >= 0) {
+ 		n = _read(fd, rnd, sizeof(rnd));
+ 		_close(fd);
+diff --git a/lib/libc/gen/getcap.c b/lib/libc/gen/getcap.c
+index e21ad39..9eedbb2 100644
+--- a/lib/libc/gen/getcap.c
++++ b/lib/libc/gen/getcap.c
+@@ -263,7 +263,7 @@ getent(char **cap, u_int *len, char **db_array, int fd, const char *name,
+ 				*cap = cbuf;
+ 				return (retval);
+ 			} else {
+-				fd = _open(*db_p, O_RDONLY, 0);
++				fd = _open(*db_p, O_RDONLY | O_CLOEXEC, 0);
+ 				if (fd < 0)
+ 					continue;
+ 				myfd = 1;
+diff --git a/lib/libc/gen/nlist.c b/lib/libc/gen/nlist.c
+index f7cb296..c436ca1 100644
+--- a/lib/libc/gen/nlist.c
++++ b/lib/libc/gen/nlist.c
+@@ -61,7 +61,7 @@ nlist(const char *name, struct nlist *list)
+ {
+ 	int fd, n;
+ 
+-	fd = _open(name, O_RDONLY, 0);
++	fd = _open(name, O_RDONLY | O_CLOEXEC, 0);
+ 	if (fd < 0)
+ 		return (-1);
+ 	n = __fdnlist(fd, list);
+diff --git a/lib/libc/gen/popen.c b/lib/libc/gen/popen.c
+index a42a624..35803b4 100644
+--- a/lib/libc/gen/popen.c
++++ b/lib/libc/gen/popen.c
+@@ -46,6 +46,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <paths.h>
++#include <fcntl.h>
+ #include <pthread.h>
+ #include "un-namespace.h"
+ #include "libc_private.h"
+@@ -68,10 +69,12 @@ popen(const char *command, const char *type)
+ {
+ 	struct pid *cur;
+ 	FILE *iop;
+-	int pdes[2], pid, twoway;
++	int pdes[2], pid, twoway, cloexec;
+ 	const char *argv[4];
+ 	struct pid *p;
+ 
++	cloexec = (strchr(type, 'e') != NULL);
++
+ 	/*
+ 	 * Lite2 introduced two-way popen() pipes using _socketpair().
+ 	 * FreeBSD's pipe() is bidirectional, so we use that.
+@@ -81,10 +84,11 @@ popen(const char *command, const char *type)
+ 		type = "r+";
+ 	} else  {
+ 		twoway = 0;
+-		if ((*type != 'r' && *type != 'w') || type[1])
++		if ((*type != 'r' && *type != 'w') ||
++		    (type[1] && (type[1] != 'e' || type[2])))
+ 			return (NULL);
+ 	}
+-	if (pipe(pdes) < 0)
++	if (pipe2(pdes, O_CLOEXEC) < 0)
+ 		return (NULL);
+ 
+ 	if ((cur = malloc(sizeof(struct pid))) == NULL) {
+@@ -118,6 +122,7 @@ popen(const char *command, const char *type)
+ 			 * variables.
+ 			 */
+ 			_close(pdes[0]);
++			_fcntl(pdes[1], F_SETFD, 0);
+ 			if (pdes[1] != STDOUT_FILENO) {
+ 				_dup2(pdes[1], STDOUT_FILENO);
+ 				_close(pdes[1]);
+@@ -126,6 +131,7 @@ popen(const char *command, const char *type)
+ 			} else if (twoway && (pdes[1] != STDIN_FILENO))
+ 				_dup2(pdes[1], STDIN_FILENO);
+ 		} else {
++			_fcntl(pdes[0], F_SETFD, 0);
+ 			if (pdes[0] != STDIN_FILENO) {
+ 				_dup2(pdes[0], STDIN_FILENO);
+ 				_close(pdes[0]);
+@@ -156,6 +162,11 @@ popen(const char *command, const char *type)
+ 	SLIST_INSERT_HEAD(&pidlist, cur, next);
+ 	THREAD_UNLOCK();
+ 
++	if (!cloexec) {
++		int fd = (*type == 'r') ? pdes[0] : pdes[1];
++		_fcntl(fd, F_SETFD, 0);
++	}
++
+ 	return (iop);
+ }
+ 
+diff --git a/lib/libc/gen/readpassphrase.c b/lib/libc/gen/readpassphrase.c
+index a953f89..6d9eb09 100644
+--- a/lib/libc/gen/readpassphrase.c
++++ b/lib/libc/gen/readpassphrase.c
+@@ -69,7 +69,7 @@ restart:
+ 	 * Read and write to /dev/tty if available.  If not, read from
+ 	 * stdin and write to stderr unless a tty is required.
+ 	 */
+-	if ((input = output = _open(_PATH_TTY, O_RDWR)) == -1) {
++	if ((input = output = _open(_PATH_TTY, O_RDWR | O_CLOEXEC)) == -1) {
+ 		if (flags & RPP_REQUIRE_TTY) {
+ 			errno = ENOTTY;
+ 			return(NULL);
+diff --git a/lib/libc/gen/syslog.c b/lib/libc/gen/syslog.c
+index 297aa13..87f8f77 100644
+--- a/lib/libc/gen/syslog.c
++++ b/lib/libc/gen/syslog.c
+@@ -309,7 +309,7 @@ vsyslog(int pri, const char *fmt, va_list ap)
+ 	 * Make sure the error reported is the one from the syslogd failure.
+ 	 */
+ 	if ((LogStat & LOG_CONS) &&
+-	    (fd = _open(_PATH_CONSOLE, O_WRONLY|O_NONBLOCK, 0)) >= 0) {
++	    (fd = _open(_PATH_CONSOLE, O_WRONLY|O_NONBLOCK|O_CLOEXEC, 0)) >= 0) {
+ 		struct iovec iov[2];
+ 		struct iovec *v = iov;
+ 
+diff --git a/lib/libc/gen/wordexp.c b/lib/libc/gen/wordexp.c
+index 9e764b3..35071aa 100644
+--- a/lib/libc/gen/wordexp.c
++++ b/lib/libc/gen/wordexp.c
+@@ -34,6 +34,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <fcntl.h>
+ #include <unistd.h>
+ #include <wordexp.h>
+ #include "un-namespace.h"
+@@ -98,7 +99,7 @@ we_askshell(const char *words, wordexp_t *we, int flags)
+ 	if ((ifs = getenv("IFS")) == NULL)
+ 		ifs = " \t\n";
+ 
+-	if (pipe(pdes) < 0)
++	if (pipe2(pdes, O_CLOEXEC) < 0)
+ 		return (WRDE_NOSPACE);	/* XXX */
+ 	if ((pid = fork()) < 0) {
+ 		_close(pdes[0]);
+@@ -114,6 +115,7 @@ we_askshell(const char *words, wordexp_t *we, int flags)
+ 		char *cmd;
+ 
+ 		_close(pdes[0]);
++		_fcntl(pdes[1], F_SETFD, 0);
+ 		if (_dup2(pdes[1], STDOUT_FILENO) < 0)
+ 			_exit(1);
+ 		_close(pdes[1]);
+diff --git a/lib/libc/gmon/gmon.c b/lib/libc/gmon/gmon.c
+index fcc7172..47b9215 100644
+--- a/lib/libc/gmon/gmon.c
++++ b/lib/libc/gmon/gmon.c
+@@ -166,13 +166,13 @@ _mcleanup(void)
+ 
+ 	moncontrol(0);
+ 	snprintf(outname, sizeof(outname), "%s.gmon", _getprogname());
+-	fd = _open(outname, O_CREAT|O_TRUNC|O_WRONLY, 0666);
++	fd = _open(outname, O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC, 0666);
+ 	if (fd < 0) {
+ 		_warn("_mcleanup: %s", outname);
+ 		return;
+ 	}
+ #ifdef DEBUG
+-	log = _open("gmon.log", O_CREAT|O_TRUNC|O_WRONLY, 0664);
++	log = _open("gmon.log", O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC, 0664);
+ 	if (log < 0) {
+ 		_warn("_mcleanup: gmon.log");
+ 		return;
+diff --git a/lib/libc/stdio/Symbol.map b/lib/libc/stdio/Symbol.map
+index 4d1650f..2eda0fc 100644
+--- a/lib/libc/stdio/Symbol.map
++++ b/lib/libc/stdio/Symbol.map
+@@ -152,6 +152,11 @@ DF404.0 {
+     wscanf_l;
+ };
+ 
++DF406.0 {
++    mkostemp;
++    mkostemps;
++};
++
+ DFprivate_1.0 {
+     __fcloseall;
+     __fflush;
+diff --git a/lib/libc/stdio/fdopen.c b/lib/libc/stdio/fdopen.c
+index 35926a7..8d656fc 100644
+--- a/lib/libc/stdio/fdopen.c
++++ b/lib/libc/stdio/fdopen.c
+@@ -63,6 +63,10 @@ fdopen(int fd, const char *mode)
+ 
+ 	if ((fp = __sfp()) == NULL)
+ 		return (NULL);
++
++	if (oflags & O_CLOEXEC)
++		_fcntl(fd, F_SETFD, FD_CLOEXEC);    /* silently ignore err */
++
+ 	fp->pub._flags = flags;
+ 	/*
+ 	 * If opened for appending, but underlying descriptor does not have
+diff --git a/lib/libc/stdio/freopen.c b/lib/libc/stdio/freopen.c
+index f196b89..899eb6d 100644
+--- a/lib/libc/stdio/freopen.c
++++ b/lib/libc/stdio/freopen.c
+@@ -111,6 +111,9 @@ freopen(const char * __restrict file, const char * __restrict mode, FILE *fp)
+ 			ftruncate(fp->pub._fileno, (off_t)0);
+ 		if (!(oflags & O_APPEND))
+ 			_sseek(fp, (fpos_t)0, SEEK_SET);
++		if (oflags & O_CLOEXEC)
++			_fcntl(fileno(fp), F_SETFD, FD_CLOEXEC);
++
+ 		f = fp->pub._fileno;
+ 		isopen = 0;
+ 		wantfd = -1;
+@@ -190,9 +193,16 @@ finish:
+ 	 * assume stderr is always fd STDERR_FILENO, even if being freopen'd.
+ 	 */
+ 	if (wantfd >= 0 && f != wantfd) {
+-		if (_dup2(f, wantfd) >= 0) {
+-			_close(f);
+-			f = wantfd;
++		if (oflags & O_CLOEXEC) {
++			if (_fcntl(f, F_DUP2FD_CLOEXEC, wantfd) >= 0) {
++				_close(f);
++				f = wantfd;
++			}
++		} else {
++			if (_dup2(f, wantfd) >= 0) {
++				_close(f);
++				f = wantfd;
++			}
+ 		}
+ 	}
+ 
+diff --git a/lib/libc/stdio/mktemp.3 b/lib/libc/stdio/mktemp.3
+index 6dfcf95..36b30c8 100644
+--- a/lib/libc/stdio/mktemp.3
++++ b/lib/libc/stdio/mktemp.3
+@@ -44,7 +44,11 @@
+ .Ft int
+ .Fn mkstemp "char *template"
+ .Ft int
++.Fn mkostemp "char *template" "int oflags"
++.Ft int
+ .Fn mkstemps "char *template" "int suffixlen"
++.Ft int
++.Fn mkostemps "char *template" "int suffixlen" "int oflags"
+ .Ft char *
+ .Fn mkdtemp "char *template"
+ .Sh DESCRIPTION
+@@ -85,6 +89,15 @@ This avoids the race between testing for a file's existence and opening it
+ for use.
+ .Pp
+ The
++.Fn mkostemp
++function is like
++.Fn mkstemp
++but allows specifying additional
++.Xr open 2
++flags such as
++.Dv O_CLOEXEC .
++.Pp
++The
+ .Fn mkstemps
+ function acts the same as
+ .Fn mkstemp ,
+@@ -96,6 +109,15 @@ The
+ function
+ is told the length of the suffix string.
+ .Pp
++.The
++.Fn mkostemps
++function is like
++.Fn mkstemps
++but allows specifying additional
++.Xr open 2
++flags such as
++.Dv O_CLOEXEC .
++.Pp
+ The
+ .Fn mkdtemp
+ function makes the same replacement to the template as in
+diff --git a/lib/libc/stdio/mktemp.c b/lib/libc/stdio/mktemp.c
+index 99a1936..d186fd7 100644
+--- a/lib/libc/stdio/mktemp.c
++++ b/lib/libc/stdio/mktemp.c
+@@ -45,7 +45,7 @@
+ 
+ char *_mktemp(char *);
+ 
+-static int _gettemp(char *, int *, int, int);
++static int _gettemp(char *, int *, int, int, int);
+ 
+ static const unsigned char padchar[] =
+ "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+@@ -55,7 +55,15 @@ mkstemps(char *path, int slen)
+ {
+ 	int fd;
+ 
+-	return (_gettemp(path, &fd, 0, slen) ? fd : -1);
++	return (_gettemp(path, &fd, 0, slen, 0) ? fd : -1);
++}
++
++int
++mkostemps(char *path, int slen, int oflags)
++{
++	int fd;
++
++	return (_gettemp(path, &fd, 0, slen, oflags) ? fd : -1);
+ }
+ 
+ int
+@@ -63,19 +71,27 @@ mkstemp(char *path)
+ {
+ 	int fd;
+ 
+-	return (_gettemp(path, &fd, 0, 0) ? fd : -1);
++	return (_gettemp(path, &fd, 0, 0, 0) ? fd : -1);
++}
++
++int
++mkostemp(char *path, int oflags)
++{
++	int fd;
++
++	return (_gettemp(path, &fd, 0, 0, oflags) ? fd : -1);
+ }
+ 
+ char *
+ mkdtemp(char *path)
+ {
+-	return (_gettemp(path, NULL, 1, 0) ? path : NULL);
++	return (_gettemp(path, NULL, 1, 0, 0) ? path : NULL);
+ }
+ 
+ char *
+ _mktemp(char *path)
+ {
+-	return (_gettemp(path, NULL, 0, 0) ? path : NULL);
++	return (_gettemp(path, NULL, 0, 0, 0) ? path : NULL);
+ }
+ 
+ __warn_references(mktemp,
+@@ -88,7 +104,7 @@ mktemp(char *path)
+ }
+ 
+ static int
+-_gettemp(char *path, int *doopen, int domkdir, int slen)
++_gettemp(char *path, int *doopen, int domkdir, int slen, int oflags)
+ {
+ 	char *start, *trv, *suffp, *carryp;
+ 	char *pad;
+@@ -97,6 +113,11 @@ _gettemp(char *path, int *doopen, int domkdir, int slen)
+ 	uint32_t rand;
+ 	char carrybuf[MAXPATHLEN];
+ 
++	if ((oflags & ~(O_APPEND | O_DIRECT | O_SHLOCK |
++		        O_EXLOCK | O_SYNC | O_CLOEXEC)) != 0) {
++		errno = EINVAL;
++		return (0);
++	}
+ 	if ((doopen != NULL && domkdir) || slen < 0) {
+ 		errno = EINVAL;
+ 		return (0);
+diff --git a/lib/libc/yp/yplib.c b/lib/libc/yp/yplib.c
+index c3e08ee..2bced56 100644
+--- a/lib/libc/yp/yplib.c
++++ b/lib/libc/yp/yplib.c
+@@ -382,7 +382,7 @@ again:
+ 			ysd->dom_socket = -1;
+ 		}
+ 		snprintf(path, sizeof(path), "%s/%s.%d", BINDINGDIR, dom, 2);
+-		if ((fd = _open(path, O_RDONLY)) == -1) {
++		if ((fd = _open(path, O_RDONLY | O_CLOEXEC)) == -1) {
+ 			/* no binding file, YP is dead. */
+ 			/* Try to bring it back to life. */
+ 			_close(fd);
+-- 
+2.7.2
+

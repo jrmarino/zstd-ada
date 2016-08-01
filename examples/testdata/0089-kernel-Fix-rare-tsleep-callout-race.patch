@@ -1,0 +1,32 @@
+From a739e4f85f5a01de1f9f1b414af033798a981373 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Fri, 29 Jul 2016 10:02:50 -0700
+Subject: [PATCH 089/100] kernel - Fix rare tsleep/callout race
+
+* Fix a rare tsleep/callout race.  The callout timer can trigger before
+  the tsleep() releases its lwp_token (or if someone else holds the
+  calling thread's lwp_token).
+
+  This case is detected, but failed to adjust lwp_stat before
+  descheduling and switching away.  This resulted in an endless sleep.
+---
+ sys/kern/kern_synch.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sys/kern/kern_synch.c b/sys/kern/kern_synch.c
+index 4af98bf..fa8d112 100644
+--- a/sys/kern/kern_synch.c
++++ b/sys/kern/kern_synch.c
+@@ -654,6 +654,9 @@ tsleep(const volatile void *ident, int flags, const char *wmesg, int timo)
+ 	 */
+ 	if (timo) {
+ 		while (td->td_flags & TDF_TIMEOUT_RUNNING) {
++			/* else we won't get rescheduled! */
++			if (lp->lwp_stat != LSSTOP)
++				lp->lwp_stat = LSSLEEP;
+ 			lwkt_deschedule_self(td);
+ 			td->td_wmesg = "tsrace";
+ 			lwkt_switch();
+-- 
+2.7.2
+

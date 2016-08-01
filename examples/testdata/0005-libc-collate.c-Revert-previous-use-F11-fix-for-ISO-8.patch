@@ -1,0 +1,62 @@
+From 62a9429edfd13a511b87f7f26655de551c480fd7 Mon Sep 17 00:00:00 2001
+From: John Marino <draco@marino.st>
+Date: Mon, 18 Jul 2016 13:25:28 +0200
+Subject: [PATCH 005/100] libc/collate.c: Revert previous, use F11 fix for ISO
+ 8859-5
+
+There were some edge failures with the previous fix as discussed between
+Illumos (Tirkkonen/D'Amore) and FreeBSD (bapt).  They were considered
+showstoppers for F11 release; this change follows the current solution
+for FreeBSD.
+---
+ lib/libc/locale/collate.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/lib/libc/locale/collate.c b/lib/libc/locale/collate.c
+index 952083f..62529e5 100644
+--- a/lib/libc/locale/collate.c
++++ b/lib/libc/locale/collate.c
+@@ -301,7 +301,7 @@ _collate_lookup(struct xlocale_collate *table, const wchar_t *t, int *len,
+ 	if ((sptr = *state) != NULL) {
+ 		*pri = *sptr;
+ 		sptr++;
+-		if ((sptr == *state) || (*sptr == 0))
++		if ((sptr == *state) || (sptr == NULL))
+ 			*state = NULL;
+ 		else
+ 			*state = sptr;
+@@ -443,6 +443,7 @@ _collate_wxfrm(struct xlocale_collate *table, const wchar_t *src, wchar_t *xf,
+ 						errno = EINVAL;
+ 						goto fail;
+ 					}
++					state = NULL;
+ 					pri = COLLATE_MAX_PRIORITY;
+ 				}
+ 				if (room) {
+@@ -461,6 +462,7 @@ _collate_wxfrm(struct xlocale_collate *table, const wchar_t *src, wchar_t *xf,
+ 						errno = EINVAL;
+ 						goto fail;
+ 					}
++					state = NULL;
+ 					continue;
+ 				}
+ 				if (room) {
+@@ -590,6 +592,7 @@ _collate_sxfrm(struct xlocale_collate *table, const wchar_t *src, char *xf,
+ 						errno = EINVAL;
+ 						goto fail;
+ 					}
++					state = NULL;
+ 					pri = COLLATE_MAX_PRIORITY;
+ 				}
+ 
+@@ -615,6 +618,7 @@ _collate_sxfrm(struct xlocale_collate *table, const wchar_t *src, char *xf,
+ 						errno = EINVAL;
+ 						goto fail;
+ 					}
++					state = NULL;
+ 					continue;
+ 				}
+ 
+-- 
+2.7.2
+

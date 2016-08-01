@@ -1,0 +1,25 @@
+From 98c1338cf32c3b9330fcc4d132e9ba2033108598 Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Sat, 23 Jul 2016 21:15:13 +0200
+Subject: [PATCH 045/100] Fix VKERNEL64 build.
+
+---
+ sys/platform/vkernel64/x86_64/exception.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sys/platform/vkernel64/x86_64/exception.c b/sys/platform/vkernel64/x86_64/exception.c
+index c791f2e..6a163fc 100644
+--- a/sys/platform/vkernel64/x86_64/exception.c
++++ b/sys/platform/vkernel64/x86_64/exception.c
+@@ -80,7 +80,7 @@ ipisig(int nada, siginfo_t *info, void *ctxp)
+ 	if (td->td_critcount == 0) {
+ 		++td->td_critcount;
+ 		++gd->gd_intr_nesting_level;
+-		atomic_swap_int(&gd->mi.gd_npoll, 0);
++		atomic_swap_int(&gd->gd_npoll, 0);
+ 		lwkt_process_ipiq();
+ 		--gd->gd_intr_nesting_level;
+ 		--td->td_critcount;
+-- 
+2.7.2
+

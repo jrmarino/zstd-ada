@@ -1,0 +1,29 @@
+From b8674cff3d2808cded6daa41e6a9df70cf5732fd Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sun, 24 Jul 2016 14:02:10 -0700
+Subject: [PATCH 057/100] drm - Fix subtle plane masking bug.
+
+* Index needs to be 1 << index.
+
+Reported-by: davshao
+Found-by: Matt Roper - https://patchwork.kernel.org/patch/7889051/
+---
+ sys/dev/drm/drm_fb_helper.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sys/dev/drm/drm_fb_helper.c b/sys/dev/drm/drm_fb_helper.c
+index f68b1d4..08b6b1d 100644
+--- a/sys/dev/drm/drm_fb_helper.c
++++ b/sys/dev/drm/drm_fb_helper.c
+@@ -1257,7 +1257,7 @@ retry:
+ 			goto fail;
+ 
+ 		plane = mode_set->crtc->primary;
+-		plane_mask |= drm_plane_index(plane);
++		plane_mask |= 1 << drm_plane_index(plane);
+ 		plane->old_fb = plane->fb;
+ 	}
+ 
+-- 
+2.7.2
+

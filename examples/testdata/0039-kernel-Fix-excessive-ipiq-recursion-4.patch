@@ -1,0 +1,86 @@
+From 7fb451cb3c27563ba7a952e347f9a12cc68a9a9c Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Fri, 22 Jul 2016 21:58:59 -0700
+Subject: [PATCH 039/100] kernel - Fix excessive ipiq recursion (4)
+
+* Possibly the smoking gun.  There was a case where the lwkt_switch()
+  code could wind up looping excessively calling lwkt_getalltokens()
+  if td_contended went negative, and td_contended on interrupt threads
+  could in-fact go negative.
+
+  This stopped IPIs in their tracks.
+
+* Fix by making td_contended unsigned, causing the comparions to work
+  in all situations.  And add a missing assignment to 0 for the
+  preempted thread case.
+---
+ sys/kern/lwkt_thread.c | 11 ++++++-----
+ sys/sys/thread.h       |  2 +-
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/sys/kern/lwkt_thread.c b/sys/kern/lwkt_thread.c
+index 0410b7d..9fca7ec 100644
+--- a/sys/kern/lwkt_thread.c
++++ b/sys/kern/lwkt_thread.c
+@@ -128,8 +128,8 @@ extern int lwkt_sched_debug;
+ int lwkt_sched_debug = 0;
+ SYSCTL_INT(_lwkt, OID_AUTO, sched_debug, CTLFLAG_RW,
+ 	&lwkt_sched_debug, 0, "Scheduler debug");
+-static int lwkt_spin_loops = 10;
+-SYSCTL_INT(_lwkt, OID_AUTO, spin_loops, CTLFLAG_RW,
++static u_int lwkt_spin_loops = 10;
++SYSCTL_UINT(_lwkt, OID_AUTO, spin_loops, CTLFLAG_RW,
+ 	&lwkt_spin_loops, 0, "Scheduler spin loops until sorted decon");
+ static int preempt_enable = 1;
+ SYSCTL_INT(_lwkt, OID_AUTO, preempt_enable, CTLFLAG_RW,
+@@ -634,6 +634,7 @@ lwkt_switch(void)
+     if ((ntd = td->td_preempted) != NULL) {
+ 	KKASSERT(ntd->td_flags & TDF_PREEMPT_LOCK);
+ 	ntd->td_flags |= TDF_PREEMPT_DONE;
++	ntd->td_contended = 0;		/* reset contended */
+ 
+ 	/*
+ 	 * The interrupt may have woken a thread up, we need to properly
+@@ -666,7 +667,7 @@ lwkt_switch(void)
+ 		goto havethread;
+ 	    }
+ 	    ++gd->gd_cnt.v_lock_colls;
+-	    ++ntd->td_contended;
++	    ++ntd->td_contended;	/* overflow ok */
+ 	} while (ntd->td_contended < (lwkt_spin_loops >> 1));
+ 	upri = ntd->td_upri;
+ 
+@@ -691,7 +692,7 @@ lwkt_switch(void)
+ 		lwkt_getalltokens(ntd, (ntd->td_contended > lwkt_spin_loops))) {
+ 		    goto havethread;
+ 	    }
+-	    ++ntd->td_contended;
++	    ++ntd->td_contended;	/* overflow ok */
+ 	    ++gd->gd_cnt.v_lock_colls;
+ 	}
+ 
+@@ -719,7 +720,7 @@ havethread:
+      * thread.
+      */
+     ntd->td_wmesg = NULL;
+-    ntd->td_contended = 0;
++    ntd->td_contended = 0;	/* reset once scheduled */
+     ++gd->gd_cnt.v_swtch;
+     gd->gd_idle_repeat = 0;
+ 
+diff --git a/sys/sys/thread.h b/sys/sys/thread.h
+index 27e523f..9db9eea 100644
+--- a/sys/sys/thread.h
++++ b/sys/sys/thread.h
+@@ -272,7 +272,7 @@ struct thread {
+     void	*td_unused01;	/* (future I/O scheduler heuristic) */
+     int		td_refs;	/* hold position in gd_tdallq / hold free */
+     int		td_nest_count;	/* prevent splz nesting */
+-    int		td_contended;	/* token contention count */
++    u_int	td_contended;	/* token contention count */
+     u_int	td_mpflags;	/* flags can be set by foreign cpus */
+     int		td_cscount;	/* cpu synchronization master */
+     int		td_wakefromcpu;	/* who woke me up? */
+-- 
+2.7.2
+

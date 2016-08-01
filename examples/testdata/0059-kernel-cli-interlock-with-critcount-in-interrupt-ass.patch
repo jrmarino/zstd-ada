@@ -1,0 +1,52 @@
+From ae18e11d61f5cb1b3d4f1ecc8c70eff9bdd31df0 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sun, 24 Jul 2016 21:44:33 -0700
+Subject: [PATCH 059/100] kernel - cli interlock with critcount in interrupt
+ assembly
+
+* Disable interrupts when decrementing the critical section count
+  and gd_intr_nesting_level, just prior to jumping into doreti.
+  This prevents a stacking interrupt from occurring in this roughly
+  10-instruction window.
+
+* While limited stacking is not really a problem, this closes a very
+  small and unlikely window where multiple device interrupts could
+  stack excessively and run the kernel thread out of stack space.
+  (unlikely that it has ever happened in real life, but becoming more
+  likely as some modern devices are capable of much higher interrupt
+  rates).
+---
+ sys/platform/pc64/apic/apic_vector.s | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sys/platform/pc64/apic/apic_vector.s b/sys/platform/pc64/apic/apic_vector.s
+index 2c27ddd..60fea63 100644
+--- a/sys/platform/pc64/apic/apic_vector.s
++++ b/sys/platform/pc64/apic/apic_vector.s
+@@ -149,6 +149,7 @@ IDTVEC(ioapic_intr##irq_num) ;						\
+ 	incl	TD_CRITCOUNT(%rbx) ;					\
+ 	sti ;								\
+ 	call	ithread_fast_handler ;	/* returns 0 to unmask */	\
++	cli ;				/* interlock avoid stacking */	\
+ 	decl	TD_CRITCOUNT(%rbx) ;					\
+ 	addq	$8, %rsp ;		/* intrframe -> trapframe */	\
+ 	UNMASK_IRQ(irq_num) ;						\
+@@ -354,6 +355,7 @@ Xipiq:
+ 	sti
+ 	xchgl	%eax,PCPU(npoll)	/* (atomic op) allow another Xipi */
+ 	call	lwkt_process_ipiq_frame
++	cli 				/* interlock avoid stacking */
+ 	decl	TD_CRITCOUNT(%rbx)
+ 	decl	PCPU(intr_nesting_level)
+ 	addq	$8,%rsp			/* turn into trapframe */
+@@ -393,6 +395,7 @@ Xtimer:
+ 	incl	TD_CRITCOUNT(%rbx)
+ 	sti
+ 	call	pcpu_timer_process_frame
++	cli 				/* interlock avoid stacking */
+ 	decl	TD_CRITCOUNT(%rbx)
+ 	decl	PCPU(intr_nesting_level)
+ 	addq	$8,%rsp			/* turn into trapframe */
+-- 
+2.7.2
+

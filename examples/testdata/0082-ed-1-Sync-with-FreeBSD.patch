@@ -1,0 +1,231 @@
+From 92e10cbe8bcf053cad0b647bd29a30c52d3ed4f2 Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Thu, 28 Jul 2016 19:10:40 +0200
+Subject: [PATCH 082/100] ed(1): Sync with FreeBSD.
+
+---
+ bin/ed/Makefile |  2 +-
+ bin/ed/cbc.c    |  9 +++------
+ bin/ed/ed.1     |  4 ++--
+ bin/ed/glbl.c   |  4 ++--
+ bin/ed/io.c     | 29 +++++++++++++++++++----------
+ bin/ed/main.c   | 12 +++++++-----
+ 6 files changed, 34 insertions(+), 26 deletions(-)
+
+diff --git a/bin/ed/Makefile b/bin/ed/Makefile
+index ec2ca23..33b2f93 100644
+--- a/bin/ed/Makefile
++++ b/bin/ed/Makefile
+@@ -1,4 +1,4 @@
+-# $FreeBSD: head/bin/ed/Makefile 235654 2012-05-19 17:55:49Z marcel $
++# $FreeBSD: head/bin/ed/Makefile 298107 2016-04-16 07:45:30Z gjb $
+ 
+ PROG=	ed
+ SRCS=	buf.c cbc.c glbl.c io.c main.c re.c sub.c undo.c
+diff --git a/bin/ed/cbc.c b/bin/ed/cbc.c
+index 00d0a1e..84c4a5a 100644
+--- a/bin/ed/cbc.c
++++ b/bin/ed/cbc.c
+@@ -33,7 +33,7 @@
+  *	from: @(#)bdes.c	5.5 (Berkeley) 6/27/91
+  *
+  * @(#)cbc.c,v 1.2 1994/02/01 00:34:36 alm Exp
+- * $FreeBSD: head/bin/ed/cbc.c 248656 2013-03-23 19:04:57Z jmg $
++ * $FreeBSD: head/bin/ed/cbc.c 300340 2016-05-21 00:45:42Z pfg $
+  */
+ 
+ #include <sys/types.h>
+@@ -92,16 +92,13 @@ void
+ init_des_cipher(void)
+ {
+ #ifdef DES
+-	int i;
+-
+ 	des_ct = des_n = 0;
+ 
+ 	/* initialize the initialization vector */
+ 	MEMZERO(ivec, 8);
+ 
+ 	/* initialize the padding vector */
+-	for (i = 0; i < 8; i++)
+-		pvec[i] = (char) (arc4random() % 256);
++	arc4random_buf(pvec, sizeof(pvec));
+ #endif
+ }
+ 
+@@ -166,7 +163,7 @@ get_keyword(void)
+ 	/*
+ 	 * get the key
+ 	 */
+-	if (*(p = getpass("Enter key: "))) {
++	if ((p = getpass("Enter key: ")) != NULL && *p != '\0') {
+ 
+ 		/*
+ 		 * copy it, nul-padded, into the key area
+diff --git a/bin/ed/ed.1 b/bin/ed/ed.1
+index 482081f..679cb0b 100644
+--- a/bin/ed/ed.1
++++ b/bin/ed/ed.1
+@@ -1,4 +1,4 @@
+-.\" $FreeBSD: head/bin/ed/ed.1 250582 2013-05-12 22:22:12Z joel $
++.\" $FreeBSD: head/bin/ed/ed.1 281997 2015-04-26 10:03:05Z bapt $
+ .Dd July 3, 2004
+ .Dt ED 1
+ .Os
+@@ -739,7 +739,7 @@ It is an error if no substitutions are performed on any of the addressed
+ lines.
+ The current address is set the last line affected.
+ .Pp
+-.Ar Re
++.Ar \&Re
+ and
+ .Ar replacement
+ may be delimited by any character other than space and newline
+diff --git a/bin/ed/glbl.c b/bin/ed/glbl.c
+index 39503c7..83b35e4 100644
+--- a/bin/ed/glbl.c
++++ b/bin/ed/glbl.c
+@@ -26,7 +26,7 @@
+  * SUCH DAMAGE.
+  *
+  * @(#)glob.c,v 1.1 1994/02/01 00:34:40 alm Exp
+- * $FreeBSD: head/bin/ed/glbl.c 241720 2012-10-19 05:43:38Z ed $
++ * $FreeBSD: head/bin/ed/glbl.c 281758 2015-04-20 02:07:57Z eadler $
+  */
+ 
+ #include <sys/types.h>
+@@ -154,7 +154,7 @@ set_active_node(line_t *lp)
+ 		if (active_list != NULL) {
+ #endif
+ 			if ((ts = (line_t **) realloc(active_list,
+-			    (ti += MINBUFSZ) * sizeof(line_t **))) == NULL) {
++			    (ti += MINBUFSZ) * sizeof(line_t *))) == NULL) {
+ 				fprintf(stderr, "%s\n", strerror(errno));
+ 				errmsg = "out of memory";
+ 				SPL0();
+diff --git a/bin/ed/io.c b/bin/ed/io.c
+index 9cccf8d..ac3ace0 100644
+--- a/bin/ed/io.c
++++ b/bin/ed/io.c
+@@ -25,7 +25,7 @@
+  * SUCH DAMAGE.
+  *
+  * @(#)io.c,v 1.1 1994/02/01 00:34:41 alm Exp
+- * $FreeBSD: head/bin/ed/io.c 241737 2012-10-19 14:49:42Z ed $
++ * $FreeBSD: head/bin/ed/io.c 300692 2016-05-25 18:38:30Z truckman $
+  */
+ 
+ #include "ed.h"
+@@ -36,20 +36,24 @@ read_file(char *fn, long n)
+ {
+ 	FILE *fp;
+ 	long size;
+-
++	int cs;
+ 
+ 	fp = (*fn == '!') ? popen(fn + 1, "r") : fopen(strip_escapes(fn), "r");
+ 	if (fp == NULL) {
+ 		fprintf(stderr, "%s: %s\n", fn, strerror(errno));
+ 		errmsg = "cannot open input file";
+ 		return ERR;
+-	} else if ((size = read_stream(fp, n)) < 0)
+-		return ERR;
+-	 else if (((*fn == '!') ?  pclose(fp) : fclose(fp)) < 0) {
++	}
++	if ((size = read_stream(fp, n)) < 0) {
++		fprintf(stderr, "%s: %s\n", fn, strerror(errno));
++		errmsg = "error reading input file";
++	}
++	if ((cs = (*fn == '!') ?  pclose(fp) : fclose(fp)) < 0) {
+ 		fprintf(stderr, "%s: %s\n", fn, strerror(errno));
+ 		errmsg = "cannot close input file";
+-		return ERR;
+ 	}
++	if (size < 0 || cs < 0)
++		return ERR;
+ 	if (!scripted)
+ 		fprintf(stdout, "%lu\n", size);
+ 	return current_addr - n;
+@@ -143,19 +147,24 @@ write_file(char *fn, const char *mode, long n, long m)
+ {
+ 	FILE *fp;
+ 	long size;
++	int cs;
+ 
+ 	fp = (*fn == '!') ? popen(fn+1, "w") : fopen(strip_escapes(fn), mode);
+ 	if (fp == NULL) {
+ 		fprintf(stderr, "%s: %s\n", fn, strerror(errno));
+ 		errmsg = "cannot open output file";
+ 		return ERR;
+-	} else if ((size = write_stream(fp, n, m)) < 0)
+-		return ERR;
+-	 else if (((*fn == '!') ?  pclose(fp) : fclose(fp)) < 0) {
++	}
++	if ((size = write_stream(fp, n, m)) < 0) {
++		fprintf(stderr, "%s: %s\n", fn, strerror(errno));
++		errmsg = "error writing output file";
++	}
++	if ((cs = (*fn == '!') ?  pclose(fp) : fclose(fp)) < 0) {
+ 		fprintf(stderr, "%s: %s\n", fn, strerror(errno));
+ 		errmsg = "cannot close output file";
+-		return ERR;
+ 	}
++	if (size < 0 || cs < 0)
++		return ERR;
+ 	if (!scripted)
+ 		fprintf(stdout, "%lu\n", size);
+ 	return n ? m - n + 1 : 0;
+diff --git a/bin/ed/main.c b/bin/ed/main.c
+index d19606f..9d31c7a 100644
+--- a/bin/ed/main.c
++++ b/bin/ed/main.c
+@@ -27,7 +27,7 @@
+  *
+  * @(#) Copyright (c) 1993 Andrew Moore, Talke Studio. All rights reserved.
+  * @(#)main.c,v 1.1 1994/02/01 00:34:42 alm Exp
+- * $FreeBSD: head/bin/ed/main.c 241720 2012-10-19 05:43:38Z ed $
++ * $FreeBSD: head/bin/ed/main.c 292455 2015-12-18 23:05:36Z pfg $
+  */
+ 
+ /*
+@@ -489,7 +489,8 @@ exec_command(void)
+ 			return ERR;
+ 		else if (open_sbuf() < 0)
+ 			return FATAL;
+-		if (*fnp && *fnp != '!') strcpy(old_filename, fnp);
++		if (*fnp && *fnp != '!')
++			 strlcpy(old_filename, fnp, PATH_MAX);
+ #ifdef BACKWARDS
+ 		if (*fnp == '\0' && *old_filename == '\0') {
+ 			errmsg = "no current filename";
+@@ -516,7 +517,8 @@ exec_command(void)
+ 			return ERR;
+ 		}
+ 		GET_COMMAND_SUFFIX();
+-		if (*fnp) strcpy(old_filename, fnp);
++		if (*fnp)
++			strlcpy(old_filename, fnp, PATH_MAX);
+ 		printf("%s\n", strip_escapes(old_filename));
+ 		break;
+ 	case 'g':
+@@ -647,7 +649,7 @@ exec_command(void)
+ 		GET_COMMAND_SUFFIX();
+ 		if (!isglobal) clear_undo_stack();
+ 		if (*old_filename == '\0' && *fnp != '!')
+-			strcpy(old_filename, fnp);
++			strlcpy(old_filename, fnp, PATH_MAX);
+ #ifdef BACKWARDS
+ 		if (*fnp == '\0' && *old_filename == '\0') {
+ 			errmsg = "no current filename";
+@@ -781,7 +783,7 @@ exec_command(void)
+ 			return ERR;
+ 		GET_COMMAND_SUFFIX();
+ 		if (*old_filename == '\0' && *fnp != '!')
+-			strcpy(old_filename, fnp);
++			strlcpy(old_filename, fnp, PATH_MAX);
+ #ifdef BACKWARDS
+ 		if (*fnp == '\0' && *old_filename == '\0') {
+ 			errmsg = "no current filename";
+-- 
+2.7.2
+

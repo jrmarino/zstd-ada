@@ -1,0 +1,47 @@
+From 2d1b280fd7290751e4da3171a396ae301829790f Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sun, 24 Jul 2016 21:52:26 -0700
+Subject: [PATCH 061/100] kernel - Cut buffer cache related pmap invalidations
+ in half
+
+* Do not bother to invalidate the TLB when tearing down a buffer
+  cache buffer.  On the flip side, always invalidate the TLB
+  (the page range in question) when entering pages into a buffer
+  cache buffer.  Only applicable to normal VMIO buffers.
+
+* Significantly improves buffer cache / filesystem performance with
+  no real risk.
+
+* Significantly improves performance for tmpfs teardowns on unmount
+  (which typically have to tear-down a lot of buffer cache buffers).
+---
+ sys/kern/vfs_bio.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/sys/kern/vfs_bio.c b/sys/kern/vfs_bio.c
+index 5b21164..5156164 100644
+--- a/sys/kern/vfs_bio.c
++++ b/sys/kern/vfs_bio.c
+@@ -1885,8 +1885,17 @@ vfs_vmio_release(struct buf *bp)
+ 		}
+ 	}
+ 
+-	pmap_qremove(trunc_page((vm_offset_t) bp->b_data),
+-		     bp->b_xio.xio_npages);
++	/*
++	 * Zero out the pmap pte's for the mapping, but don't bother
++	 * invalidating the TLB.  The range will be properly invalidating
++	 * when new pages are entered into the mapping.
++	 *
++	 * This in particular reduces tmpfs tear-down overhead and reduces
++	 * buffer cache re-use overhead (one invalidation sequence instead
++	 * of two per re-use).
++	 */
++	pmap_qremove_noinval(trunc_page((vm_offset_t) bp->b_data),
++			     bp->b_xio.xio_npages);
+ 	if (bp->b_bufsize) {
+ 		atomic_add_long(&bufspace, -bp->b_bufsize);
+ 		bp->b_bufsize = 0;
+-- 
+2.7.2
+

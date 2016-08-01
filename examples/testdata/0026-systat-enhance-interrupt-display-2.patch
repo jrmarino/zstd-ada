@@ -1,0 +1,45 @@
+From 5719210c0cbf006e0d60997dca3ed1a1db1e7fc9 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Wed, 20 Jul 2016 18:36:14 -0700
+Subject: [PATCH 026/100] systat - enhance interrupt display (2)
+
+* Also collapse 'dev auxN', e.g. 'igb0 rxtx0', 'igb0 rxtx1', etc is
+  collapsed to 'igb0 rxtx*'.
+---
+ usr.bin/systat/vmstat.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/usr.bin/systat/vmstat.c b/usr.bin/systat/vmstat.c
+index 23672c3..232956b 100644
+--- a/usr.bin/systat/vmstat.c
++++ b/usr.bin/systat/vmstat.c
+@@ -187,12 +187,24 @@ int
+ findintralias(const char *name, int limit)
+ {
+ 	int i;
++	size_t nlen;
++	size_t ilen;
+ 
+-	if (strlen(name) > 6)
+-		return limit;
++	nlen = strlen(name);
+ 	for (i = 0; i < limit; ++i) {
+ 		if (strcmp(name, intrname[i]) == 0)
+ 			break;
++		ilen = strlen(intrname[i]);
++		if (nlen == ilen &&
++		    nlen > 1 &&
++		    strncmp(name, intrname[i], nlen - 1) == 0 &&
++		    strchr(name, ' ') &&
++		    isdigit(name[nlen - 1]) &&
++		    (isdigit(intrname[i][nlen - 1]) ||
++		     intrname[i][nlen - 1] == '*')) {
++			intrname[i][nlen - 1] = '*';
++			break;
++		}
+ 	}
+ 	return i;
+ }
+-- 
+2.7.2
+

@@ -1,0 +1,343 @@
+From fda4c5f3ee0a939d4eec5cbb125d0944b4529cac Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sun, 24 Jul 2016 21:55:00 -0700
+Subject: [PATCH 062/100] kernel - Close a few SMP holes
+
+* Don't trust the compiler when loading refs in cache_zap().  Make sure
+  it doesn't reorder or re-use the memory reference.
+
+* In cache_nlookup() and cache_nlookup_maybe_shared(), do a full re-test
+  of the namecache element after locking instead of a partial re-test.
+
+* Lock the namecache record in two situations where we need to set a
+  flag.  Almost all other flag cases require similar locking.  This fixes
+  a potential SMP race in a very thin window during mounting.
+
+* Fix unmount / access races in sys_vquotactl() and, more importantly, in
+  sys_mount().  We were disposing of the namecache record after extracting
+  the mount pointer, then using the mount pointer.  This could race an
+  unmount and result in a corrupt mount pointer.
+
+  Change the code to dispose of the namecache record after we finish using
+  the mount point.  This is somewhat more complex then I'd like, but it
+  is important to unlock the namecache record across the potentially
+  blocking operation to prevent a lock chain from propagating upwards
+  towards the root.
+
+* Enhanced debugging for the namecache teardown case when nc_refs changes
+  unexpectedly.
+
+* Remove some dead code (cache_purgevfs()).
+---
+ sys/kern/vfs_cache.c    | 62 ++++++++++++++-----------------------------------
+ sys/kern/vfs_conf.c     |  9 ++++++-
+ sys/kern/vfs_quota.c    | 31 ++++++++++++++-----------
+ sys/kern/vfs_syscalls.c | 37 ++++++++++++++++++++++-------
+ 4 files changed, 72 insertions(+), 67 deletions(-)
+
+diff --git a/sys/kern/vfs_cache.c b/sys/kern/vfs_cache.c
+index 5890130..183d957 100644
+--- a/sys/kern/vfs_cache.c
++++ b/sys/kern/vfs_cache.c
+@@ -2498,6 +2498,7 @@ cache_zap(struct namecache *ncp, int nonblock)
+ 	 */
+ 	for (;;) {
+ 		refs = ncp->nc_refs;
++		cpu_ccfence();
+ 		if (refs == 1 && TAILQ_EMPTY(&ncp->nc_list))
+ 			break;
+ 		if (atomic_cmpset_int(&ncp->nc_refs, refs, refs - 1)) {
+@@ -2540,6 +2541,12 @@ cache_zap(struct namecache *ncp, int nonblock)
+ 	 * ncp should not have picked up any refs.  Physically
+ 	 * destroy the ncp.
+ 	 */
++	if (ncp->nc_refs != 1) {
++		int save_refs = ncp->nc_refs;
++		cpu_ccfence();
++		panic("cache_zap: %p bad refs %d (%d)\n",
++			ncp, save_refs, atomic_fetchadd_int(&ncp->nc_refs, 0));
++	}
+ 	KKASSERT(ncp->nc_refs == 1);
+ 	/* _cache_unlock(ncp) not required */
+ 	ncp->nc_refs = -1;	/* safety */
+@@ -2759,8 +2766,11 @@ restart:
+ 				 * conditions that might have changed since
+ 				 * we did not have the lock before.
+ 				 */
+-				if ((ncp->nc_flag & NCF_DESTROYED) ||
+-				    ncp->nc_parent != par_nch->ncp) {
++				if (ncp->nc_parent != par_nch->ncp ||
++				    ncp->nc_nlen != nlc->nlc_namelen ||
++				    bcmp(ncp->nc_name, nlc->nlc_nameptr,
++					 ncp->nc_nlen) ||
++				    (ncp->nc_flag & NCF_DESTROYED)) {
+ 					_cache_put(ncp);
+ 					goto restart;
+ 				}
+@@ -2890,8 +2900,12 @@ cache_nlookup_maybe_shared(struct nchandle *par_nch, struct nlcomponent *nlc,
+ 			_cache_hold(ncp);
+ 			spin_unlock_shared(&nchpp->spin);
+ 			if (_cache_lock_shared_special(ncp) == 0) {
+-				if ((ncp->nc_flag & NCF_UNRESOLVED) == 0 &&
++				if (ncp->nc_parent == par_nch->ncp &&
++				    ncp->nc_nlen == nlc->nlc_namelen &&
++				    bcmp(ncp->nc_name, nlc->nlc_nameptr,
++					 ncp->nc_nlen) == 0 &&
+ 				    (ncp->nc_flag & NCF_DESTROYED) == 0 &&
++				    (ncp->nc_flag & NCF_UNRESOLVED) == 0 &&
+ 				    _cache_auto_unresolve_test(mp, ncp) == 0) {
+ 					goto found;
+ 				}
+@@ -3710,48 +3724,6 @@ cache_purge(struct vnode *vp)
+ 	cache_inval_vp(vp, CINV_DESTROY | CINV_CHILDREN);
+ }
+ 
+-/*
+- * Flush all entries referencing a particular filesystem.
+- *
+- * Since we need to check it anyway, we will flush all the invalid
+- * entries at the same time.
+- */
+-#if 0
+-
+-void
+-cache_purgevfs(struct mount *mp)
+-{
+-	struct nchash_head *nchpp;
+-	struct namecache *ncp, *nnp;
+-
+-	/*
+-	 * Scan hash tables for applicable entries.
+-	 */
+-	for (nchpp = &nchashtbl[nchash]; nchpp >= nchashtbl; nchpp--) {
+-		spin_lock_wr(&nchpp->spin); XXX
+-		ncp = LIST_FIRST(&nchpp->list);
+-		if (ncp)
+-			_cache_hold(ncp);
+-		while (ncp) {
+-			nnp = LIST_NEXT(ncp, nc_hash);
+-			if (nnp)
+-				_cache_hold(nnp);
+-			if (ncp->nc_mount == mp) {
+-				_cache_lock(ncp);
+-				ncp = cache_zap(ncp, 0);
+-				if (ncp)
+-					_cache_drop(ncp);
+-			} else {
+-				_cache_drop(ncp);
+-			}
+-			ncp = nnp;
+-		}
+-		spin_unlock_wr(&nchpp->spin); XXX
+-	}
+-}
+-
+-#endif
+-
+ static int disablecwd;
+ SYSCTL_INT(_debug, OID_AUTO, disablecwd, CTLFLAG_RW, &disablecwd, 0,
+     "Disable getcwd");
+diff --git a/sys/kern/vfs_conf.c b/sys/kern/vfs_conf.c
+index 65d23b9..e8d2a91 100644
+--- a/sys/kern/vfs_conf.c
++++ b/sys/kern/vfs_conf.c
+@@ -332,10 +332,17 @@ vfs_mountroot_devfs(void)
+ 			cache_allocroot(&mp->mnt_ncmountpt, mp, NULL);
+ 			cache_unlock(&mp->mnt_ncmountpt);
+ 		}
++		vn_unlock(vp);
+ 		mp->mnt_ncmounton = nch;		/* inherits ref */
++		cache_lock(&nch);
+ 		nch.ncp->nc_flag |= NCF_ISMOUNTPT;
++		cache_unlock(&nch);
++		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+ 
+-		/* XXX get the root of the fs and cache_setvp(mnt_ncmountpt...) */
++		/*
++		 * XXX get the root of the fs and
++		 * cache_setvp(mnt_ncmountpt...)
++		 */
+ 		mountlist_insert(mp, MNTINS_LAST);
+ 		vn_unlock(vp);
+ 		//checkdirs(&mp->mnt_ncmounton, &mp->mnt_ncmountpt);
+diff --git a/sys/kern/vfs_quota.c b/sys/kern/vfs_quota.c
+index 97262c7..e3b6f9b 100644
+--- a/sys/kern/vfs_quota.c
++++ b/sys/kern/vfs_quota.c
+@@ -328,16 +328,14 @@ int
+ sys_vquotactl(struct vquotactl_args *vqa)
+ /* const char *path, struct plistref *pref */
+ {
++	struct nchandle nch;
+ 	const char *path;
+ 	struct plistref pref;
+ 	prop_dictionary_t dict;
+ 	prop_object_t args;
+ 	char *cmd;
+-
+ 	prop_array_t pa_out;
+-
+ 	struct nlookupdata nd;
+-	struct mount *mp;
+ 	int error;
+ 
+ 	if (!vfs_quota_enabled)
+@@ -345,54 +343,60 @@ sys_vquotactl(struct vquotactl_args *vqa)
+ 	path = vqa->path;
+ 	error = copyin(vqa->pref, &pref, sizeof(pref));
+ 	error = prop_dictionary_copyin(&pref, &dict);
+-	if (error != 0)
++	if (error)
+ 		return(error);
+ 
+ 	/* we have a path, get its mount point */
+ 	error = nlookup_init(&nd, path, UIO_USERSPACE, 0);
+-	if (error != 0)
++	if (error)
+ 		return (error);
+ 	error = nlookup(&nd);
+-	if (error != 0)
++	if (error)
+ 		return (error);
+-	mp = nd.nl_nch.mount;
++	nch = nd.nl_nch;
++	cache_zero(&nd.nl_nch);
+ 	nlookup_done(&nd);
+ 
+ 	/* get the command */
+ 	if (prop_dictionary_get_cstring(dict, "command", &cmd) == 0) {
+ 		kprintf("sys_vquotactl(): couldn't get command\n");
++		cache_put(&nch);
+ 		return EINVAL;
+ 	}
+ 	args = prop_dictionary_get(dict, "arguments");
+ 	if (args == NULL) {
+ 		kprintf("couldn't get arguments\n");
++		cache_put(&nch);
+ 		return EINVAL;
+ 	}
+ 
+ 	pa_out = prop_array_create();
+-	if (pa_out == NULL)
++	if (pa_out == NULL) {
++		cache_put(&nch);
+ 		return ENOMEM;
++	}
+ 
+ 	if (strcmp(cmd, "get usage all") == 0) {
+-		cmd_get_usage_all(mp, pa_out);
++		cmd_get_usage_all(nch.mount, pa_out);
+ 		goto done;
+ 	}
+ 	if (strcmp(cmd, "set usage all") == 0) {
+-		error = cmd_set_usage_all(mp, args);
++		error = cmd_set_usage_all(nch.mount, args);
+ 		goto done;
+ 	}
+ 	if (strcmp(cmd, "set limit") == 0) {
+-		error = cmd_set_limit(mp, args);
++		error = cmd_set_limit(nch.mount, args);
+ 		goto done;
+ 	}
+ 	if (strcmp(cmd, "set limit uid") == 0) {
+-		error = cmd_set_limit_uid(mp, args);
++		error = cmd_set_limit_uid(nch.mount, args);
+ 		goto done;
+ 	}
+ 	if (strcmp(cmd, "set limit gid") == 0) {
+-		error = cmd_set_limit_gid(mp, args);
++		error = cmd_set_limit_gid(nch.mount, args);
+ 		goto done;
+ 	}
++	cache_put(&nch);
+ 	return EINVAL;
+ 
+ done:
+@@ -402,6 +406,7 @@ done:
+ 
+ 	error = prop_dictionary_copyout(&pref, dict);
+ 	error = copyout(&pref, vqa->pref, sizeof(pref));
++	cache_put(&nch);
+ 
+ 	return error;
+ }
+diff --git a/sys/kern/vfs_syscalls.c b/sys/kern/vfs_syscalls.c
+index c3bc0e1..b0430e8 100644
+--- a/sys/kern/vfs_syscalls.c
++++ b/sys/kern/vfs_syscalls.c
+@@ -405,9 +405,13 @@ update:
+ 			cache_allocroot(&mp->mnt_ncmountpt, mp, NULL);
+ 			cache_unlock(&mp->mnt_ncmountpt);
+ 		}
++		vn_unlock(vp);
+ 		mp->mnt_ncmounton = nch;		/* inherits ref */
++		cache_lock(&nch);
+ 		nch.ncp->nc_flag |= NCF_ISMOUNTPT;
++		cache_unlock(&nch);
+ 		cache_ismounting(mp);
++		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+ 
+ 		mountlist_insert(mp, MNTINS_LAST);
+ 		vn_unlock(vp);
+@@ -1100,33 +1104,50 @@ kern_mountctl(const char *path, int op, struct file *fp,
+ 		void *buf, int buflen, int *res)
+ {
+ 	struct vnode *vp;
+-	struct mount *mp;
+ 	struct nlookupdata nd;
++	struct nchandle nch;
+ 	int error;
+ 
+ 	*res = 0;
+ 	vp = NULL;
+ 	error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_FOLLOW);
+-	if (error == 0)
+-		error = nlookup(&nd);
+-	if (error == 0)
+-		error = cache_vget(&nd.nl_nch, nd.nl_cred, LK_EXCLUSIVE, &vp);
+-	mp = nd.nl_nch.mount;
+-	nlookup_done(&nd);
+ 	if (error)
+ 		return (error);
++	error = nlookup(&nd);
++	if (error) {
++		nlookup_done(&nd);
++		return (error);
++	}
++	error = cache_vget(&nd.nl_nch, nd.nl_cred, LK_EXCLUSIVE, &vp);
++	if (error) {
++		nlookup_done(&nd);
++		return (error);
++	}
++
++	/*
++	 * Yes, all this is needed to use the nch.mount below, because
++	 * we must maintain a ref on the mount to avoid ripouts (e.g.
++	 * due to heavy mount/unmount use by synth or poudriere).
++	 */
++	nch = nd.nl_nch;
++	cache_zero(&nd.nl_nch);
++	cache_unlock(&nch);
++	nlookup_done(&nd);
+ 	vn_unlock(vp);
+ 
+ 	/*
+ 	 * Must be the root of the filesystem
+ 	 */
+ 	if ((vp->v_flag & (VROOT|VPFSROOT)) == 0) {
++		cache_drop(&nch);
+ 		vrele(vp);
+ 		return (EINVAL);
+ 	}
+-	error = vop_mountctl(mp->mnt_vn_use_ops, vp, op, fp, ctl, ctllen,
++	error = vop_mountctl(nch.mount->mnt_vn_use_ops, vp, op, fp, ctl, ctllen,
+ 			     buf, buflen, res);
+ 	vrele(vp);
++	cache_drop(&nch);
++
+ 	return (error);
+ }
+ 
+-- 
+2.7.2
+

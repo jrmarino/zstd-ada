@@ -1,0 +1,111 @@
+From a391a14a3472200021bf4616938068c5e9ee2b58 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Wed, 20 Jul 2016 19:29:06 -0700
+Subject: [PATCH 031/100] nvme - Fix BUF_KERNPROC() SMP race
+
+* BUF_KERNPROC() must be issued before we submit the request.  The subq
+  lock is not sufficient to interlock request completion (which only needs
+  the comq lock).
+
+* Only occurs under extreme loads, probably due to an IPI or Xinvltlb
+  causing enough of a pause that the completion can run.  NVMe is so fast,
+  probably no other controller would hit this particular race condition.
+
+* Also fix a bio queueing race which can leave a bio hanging.  If no
+  requests are available (which can only happen under very heavy I/O
+  loads), the signaling to the admin thread on the next I/O completion
+  can race the queueing of the bio.  Fix the race by making sure the
+  admin thread is signalled *after* queueing the bio.
+---
+ sys/dev/disk/nvme/nvme.c      |  7 +++----
+ sys/dev/disk/nvme/nvme_disk.c | 18 ++++++++++++++++--
+ 2 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/sys/dev/disk/nvme/nvme.c b/sys/dev/disk/nvme/nvme.c
+index 8d88f8f..04f0e2b 100644
+--- a/sys/dev/disk/nvme/nvme.c
++++ b/sys/dev/disk/nvme/nvme.c
+@@ -344,9 +344,9 @@ nvme_get_request(nvme_subqueue_t *queue, uint8_t opcode,
+ 	 */
+ 	if ((queue->subq_tail + queue->unsubmitted + 1) % queue->nqe ==
+ 	    queue->subq_head) {
+-		queue->signal_requeue = 1;
+ 		lockmgr(&queue->lk, LK_RELEASE);
+ 		KKASSERT(queue->qid != 0);
++		atomic_swap_int(&queue->signal_requeue, 1);
+ 
+ 		return NULL;
+ 	}
+@@ -360,9 +360,9 @@ nvme_get_request(nvme_subqueue_t *queue, uint8_t opcode,
+ 		req = queue->first_avail;
+ 		cpu_ccfence();
+ 		if (req == NULL) {
+-			queue->signal_requeue = 1;
+ 			lockmgr(&queue->lk, LK_RELEASE);
+ 			KKASSERT(queue->qid != 0);
++			atomic_swap_int(&queue->signal_requeue, 1);
+ 
+ 			return NULL;
+ 		}
+@@ -527,8 +527,7 @@ nvme_put_request(nvme_request_t *req)
+ 	 * should not happen due to the large number of queue entries nvme
+ 	 * usually has.  Let it race for now (admin has a 1hz tick).
+ 	 */
+-	if (queue->signal_requeue) {
+-		queue->signal_requeue = 0;
++	if (atomic_swap_int(&queue->signal_requeue, 0)) {
+ 		atomic_set_int(&queue->sc->admin_signal, ADMIN_SIG_REQUEUE);
+ 		wakeup(&queue->sc->admin_signal);
+ 	}
+diff --git a/sys/dev/disk/nvme/nvme_disk.c b/sys/dev/disk/nvme/nvme_disk.c
+index c351f93..292d3d3 100644
+--- a/sys/dev/disk/nvme/nvme_disk.c
++++ b/sys/dev/disk/nvme/nvme_disk.c
+@@ -313,14 +313,17 @@ nvme_strategy_core(nvme_softns_t *nsc, struct bio *bio, int delay)
+ 		/*
+ 		 * Prevent callback from occurring if the synchronous
+ 		 * delay optimization is enabled.
++		 *
++		 * NOTE: subq lock does not protect the I/O (completion
++		 *	 only needs the comq lock).
+ 		 */
+ 		if (delay == 0)
+ 			req->callback = nvme_disk_callback;
+ 		req->nsc = nsc;
+ 		req->bio = bio;
++		BUF_KERNPROC(bp);		/* do before submit */
+ 		lockmgr(&subq->lk, LK_EXCLUSIVE);
+ 		nvme_submit_request(req);	/* needs subq lock */
+-		BUF_KERNPROC(bp);		/* do before lock release */
+ 		lockmgr(&subq->lk, LK_RELEASE);
+ 		if (delay) {
+ 			comq = req->comq;
+@@ -354,13 +357,24 @@ nvme_strategy_core(nvme_softns_t *nsc, struct bio *bio, int delay)
+ 	return 0;
+ 
+ 	/*
+-	 * No requests were available, requeue the bio
++	 * No requests were available, requeue the bio.
++	 *
++	 * The nvme_get_request() call armed the requeue signal but
++	 * it is possible that it was picked up too quickly.  If it
++	 * was, signal the admin thread ourselves.  This case will occur
++	 * relatively rarely and only under heavy I/O conditions so we
++	 * don't have to be entirely efficient about dealing with it.
+ 	 */
+ requeue:
+ 	BUF_KERNPROC(bp);
+ 	lockmgr(&nsc->lk, LK_EXCLUSIVE);
+ 	bioqdisksort(&nsc->bioq, bio);
+ 	lockmgr(&nsc->lk, LK_RELEASE);
++	if (atomic_swap_int(&subq->signal_requeue, 1) == 0) {
++		atomic_swap_int(&subq->signal_requeue, 0);
++                atomic_set_int(&subq->sc->admin_signal, ADMIN_SIG_REQUEUE);
++                wakeup(&subq->sc->admin_signal);
++	}
+ 	return 1;
+ }
+ 
+-- 
+2.7.2
+

@@ -1,0 +1,50 @@
+From 237baba39c2144701eb483e7ec726a8a1aafa215 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Sat, 23 Jul 2016 19:17:24 -0700
+Subject: [PATCH 051/100] hammer - remove commented out code, move a biodone()
+
+* Remove commented-out code which is no longer applicable.
+
+* Move the biodone() call in hammer_io_direct_write_complete() to after
+  the token-release, reducing stacking of tokens in biodone().
+---
+ sys/vfs/hammer/hammer_io.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/sys/vfs/hammer/hammer_io.c b/sys/vfs/hammer/hammer_io.c
+index 7fdb153..7f13b36 100644
+--- a/sys/vfs/hammer/hammer_io.c
++++ b/sys/vfs/hammer/hammer_io.c
+@@ -1665,10 +1665,6 @@ hammer_io_direct_write(hammer_mount_t hmp, struct bio *bio,
+ 		if (error == 0) {
+ 			bp = bio->bio_buf;
+ 			KKASSERT((bp->b_bufsize & HAMMER_BUFMASK) == 0);
+-			/*
+-			hammer_del_buffers(hmp, buf_offset,
+-					   zone2_offset, bp->b_bufsize);
+-			*/
+ 
+ 			/*
+ 			 * Second level bio - cached zone2 offset.
+@@ -1771,7 +1767,6 @@ hammer_io_direct_write_complete(struct bio *nbio)
+ 		lwkt_reltoken(&hmp->fs_token);
+ 		bp->b_flags |= B_INVAL;
+ 	}
+-	biodone(obio);
+ 
+ 	KKASSERT(record->gflags & HAMMER_RECG_DIRECT_IO);
+ 	if (record->gflags & HAMMER_RECG_DIRECT_WAIT) {
+@@ -1783,7 +1778,10 @@ hammer_io_direct_write_complete(struct bio *nbio)
+ 		record->gflags &= ~HAMMER_RECG_DIRECT_IO;
+ 		/* record can disappear once DIRECT_IO flag is cleared */
+ 	}
++
+ 	lwkt_reltoken(&hmp->io_token);
++
++	biodone(obio);
+ }
+ 
+ 
+-- 
+2.7.2
+

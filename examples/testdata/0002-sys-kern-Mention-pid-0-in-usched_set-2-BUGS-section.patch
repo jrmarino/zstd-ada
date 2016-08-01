@@ -1,0 +1,40 @@
+From ee85f114e672e06e8a81cfdfe32ea58ea656b981 Mon Sep 17 00:00:00 2001
+From: Tomohiro Kusumi <kusumi.tomohiro@gmail.com>
+Date: Sun, 17 Jul 2016 22:19:11 +0900
+Subject: [PATCH 002/100] sys/kern: Mention pid 0 in usched_set(2) BUGS section
+
+usched_set(2) only works for the current thread,
+so it doesn't really matter if a caller specifies 0 or getpid().
+Because of this, one would basically just pass 0 for pid.
+
+Passing neither 0 nor current pid just results in EINVAL.
+After this sanity check, uap->pid is never used.
+
+> if (uap->pid != 0 && uap->pid != curthread->td_proc->p_pid)
+>	return (EINVAL);
+---
+ lib/libc/sys/usched_set.2 | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/lib/libc/sys/usched_set.2 b/lib/libc/sys/usched_set.2
+index 2508628..8234b38 100644
+--- a/lib/libc/sys/usched_set.2
++++ b/lib/libc/sys/usched_set.2
+@@ -30,7 +30,7 @@
+ .\" OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ .\" SUCH DAMAGE.
+ .\"
+-.Dd July 16, 2016
++.Dd July 17, 2016
+ .Dt USCHED_SET 2
+ .Os
+ .Sh NAME
+@@ -132,3 +132,5 @@ The current LWP PID is used for
+ when
+ .Fa pid
+ is 0.
++One would normally only use 0 for
++.Fa pid .
+-- 
+2.7.2
+

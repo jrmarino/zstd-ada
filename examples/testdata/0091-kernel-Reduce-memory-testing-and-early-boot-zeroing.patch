@@ -1,0 +1,461 @@
+From bca42d4fa96208542f276825027831ba7573b9a4 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Fri, 29 Jul 2016 13:29:03 -0700
+Subject: [PATCH 091/100] kernel - Reduce memory testing and early-boot
+ zeroing.
+
+* Reduce the amount of memory testing and early-boot zeroing that
+  we do, improving boot times on systems with large amounts of memory.
+
+* Fix race in the page zeroing count.
+
+* Refactor the VM zeroidle code.  Instead of having just one kernel thread,
+  have one on each cpu.
+
+  This significantly increases the rate at which the machine can eat up
+  idle cycles to pre-zero pages in the cold path, improving performance
+  in the hot-path (normal) page allocations which request zerod pages.
+
+* On systems with a lot of cpus there is usually a little idle time (e.g.
+  0.1%) on a few of the cpus, even under extreme loads.  At the same time,
+  such loads might also imply a lot of zfod faults requiring zero'd pages.
+
+  On our 48-core opteron we see a zfod rate of 1.0 to 1.5 GBytes/sec and
+  a page-freeing rate of 1.3 - 2.5 GBytes/sec.  Distributing the page
+  zeroing code and eating up these miniscule bits of idle improves the
+  kernel's ability to provide a pre-zerod page (vs having to zero-it in
+  the hot path) significantly.
+
+  Under the synth test load the kernel was still able to provide 400-700
+  MBytes/sec worth of pre-zerod pages whereas before this change the kernel
+  was only able to provide 20 MBytes/sec worth of pre-zerod pages.
+---
+ sys/platform/pc64/x86_64/machdep.c | 59 +++++++++++++++++++++++++++-----------
+ sys/vm/vm_contig.c                 |  2 --
+ sys/vm/vm_meter.c                  | 18 ++++++++++--
+ sys/vm/vm_page.c                   | 12 +++++---
+ sys/vm/vm_page.h                   |  5 ++--
+ sys/vm/vm_zeroidle.c               | 48 +++++++++++++++++++------------
+ 6 files changed, 97 insertions(+), 47 deletions(-)
+
+diff --git a/sys/platform/pc64/x86_64/machdep.c b/sys/platform/pc64/x86_64/machdep.c
+index 76e97a9..087cb8c 100644
+--- a/sys/platform/pc64/x86_64/machdep.c
++++ b/sys/platform/pc64/x86_64/machdep.c
+@@ -1619,6 +1619,8 @@ ssdtosyssd(struct soft_segment_descriptor *ssd,
+ 	struct bios_smap *smapbase, *smap, *smapend;
+ 	struct efi_map_header *efihdrbase;
+ 	u_int32_t smapsize;
++#define PHYSMAP_HANDWAVE	(vm_paddr_t)(2 * 1024 * 1024)
++#define PHYSMAP_HANDWAVE_MASK	(PHYSMAP_HANDWAVE - 1)
+ 
+ static void
+ add_smap_entries(int *physmap_idx)
+@@ -1981,14 +1983,18 @@ getmemsize(caddr_t kmdp, u_int64_t first)
+ 	 */
+ 	for (i = 0; i <= physmap_idx; i += 2) {
+ 		vm_paddr_t end;
++		vm_paddr_t incr = PHYSMAP_ALIGN;
+ 
+ 		end = physmap[i + 1];
+ 
+-		for (pa = physmap[i]; pa < end; pa += PHYSMAP_ALIGN) {
+-			int tmp, page_bad, full;
+-			int *ptr = (int *)CADDR1;
++		for (pa = physmap[i]; pa < end; pa += incr) {
++			int page_bad, full;
++			volatile uint64_t *ptr = (uint64_t *)CADDR1;
++			uint64_t tmp;
+ 
++			incr = PHYSMAP_ALIGN;
+ 			full = FALSE;
++
+ 			/*
+ 			 * block out kernel memory as not available.
+ 			 */
+@@ -2007,53 +2013,71 @@ getmemsize(caddr_t kmdp, u_int64_t first)
+ 			page_bad = FALSE;
+ 
+ 			/*
++			 * Always test the first and last block supplied in
++			 * the map entry, but it just takes too long to run
++			 * the test these days and we already have to skip
++			 * pages.  Handwave it on PHYSMAP_HANDWAVE boundaries.
++			 */
++			if (pa != physmap[i]) {
++				vm_paddr_t bytes = end - pa;
++				if ((pa & PHYSMAP_HANDWAVE_MASK) == 0 &&
++				    bytes >= PHYSMAP_HANDWAVE + PHYSMAP_ALIGN) {
++					incr = PHYSMAP_HANDWAVE;
++					goto handwaved;
++				}
++			}
++
++			/*
+ 			 * map page into kernel: valid, read/write,non-cacheable
+ 			 */
+ 			*pte = pa |
+ 			    kernel_pmap.pmap_bits[PG_V_IDX] |
+ 			    kernel_pmap.pmap_bits[PG_RW_IDX] |
+ 			    kernel_pmap.pmap_bits[PG_N_IDX];
+-			cpu_invltlb();
++			cpu_invlpg(__DEVOLATILE(void *, ptr));
++			cpu_mfence();
+ 
+ 			tmp = *ptr;
+ 			/*
+ 			 * Test for alternating 1's and 0's
+ 			 */
+-			*(volatile int *)ptr = 0xaaaaaaaa;
++			*ptr = 0xaaaaaaaaaaaaaaaaLLU;
+ 			cpu_mfence();
+-			if (*(volatile int *)ptr != 0xaaaaaaaa)
++			if (*ptr != 0xaaaaaaaaaaaaaaaaLLU)
+ 				page_bad = TRUE;
+ 			/*
+ 			 * Test for alternating 0's and 1's
+ 			 */
+-			*(volatile int *)ptr = 0x55555555;
++			*ptr = 0x5555555555555555LLU;
+ 			cpu_mfence();
+-			if (*(volatile int *)ptr != 0x55555555)
++			if (*ptr != 0x5555555555555555LLU)
+ 				page_bad = TRUE;
+ 			/*
+ 			 * Test for all 1's
+ 			 */
+-			*(volatile int *)ptr = 0xffffffff;
++			*ptr = 0xffffffffffffffffLLU;
+ 			cpu_mfence();
+-			if (*(volatile int *)ptr != 0xffffffff)
++			if (*ptr != 0xffffffffffffffffLLU)
+ 				page_bad = TRUE;
+ 			/*
+ 			 * Test for all 0's
+ 			 */
+-			*(volatile int *)ptr = 0x0;
++			*ptr = 0x0;
+ 			cpu_mfence();
+-			if (*(volatile int *)ptr != 0x0)
++			if (*ptr != 0x0)
+ 				page_bad = TRUE;
+ 			/*
+ 			 * Restore original value.
+ 			 */
+ 			*ptr = tmp;
++handwaved:
+ 
+ 			/*
+ 			 * Adjust array of valid/good pages.
+ 			 */
+ 			if (page_bad == TRUE)
+ 				continue;
++
+ 			/*
+ 			 * If this good page is a continuation of the
+ 			 * previous set of good pages, then just increase
+@@ -2066,7 +2090,7 @@ getmemsize(caddr_t kmdp, u_int64_t first)
+ 			 * will terminate the loop.
+ 			 */
+ 			if (phys_avail[pa_indx] == pa) {
+-				phys_avail[pa_indx] += PHYSMAP_ALIGN;
++				phys_avail[pa_indx] += incr;
+ 			} else {
+ 				pa_indx++;
+ 				if (pa_indx == PHYS_AVAIL_ARRAY_END) {
+@@ -2077,12 +2101,12 @@ getmemsize(caddr_t kmdp, u_int64_t first)
+ 					goto do_dump_avail;
+ 				}
+ 				phys_avail[pa_indx++] = pa;
+-				phys_avail[pa_indx] = pa + PHYSMAP_ALIGN;
++				phys_avail[pa_indx] = pa + incr;
+ 			}
+-			physmem += PHYSMAP_ALIGN / PAGE_SIZE;
++			physmem += incr / PAGE_SIZE;
+ do_dump_avail:
+ 			if (dump_avail[da_indx] == pa) {
+-				dump_avail[da_indx] += PHYSMAP_ALIGN;
++				dump_avail[da_indx] += incr;
+ 			} else {
+ 				da_indx++;
+ 				if (da_indx == DUMP_AVAIL_ARRAY_END) {
+@@ -2090,7 +2114,7 @@ do_dump_avail:
+ 					goto do_next;
+ 				}
+ 				dump_avail[da_indx++] = pa;
+-				dump_avail[da_indx] = pa + PHYSMAP_ALIGN;
++				dump_avail[da_indx] = pa + incr;
+ 			}
+ do_next:
+ 			if (full)
+@@ -2099,6 +2123,7 @@ do_next:
+ 	}
+ 	*pte = 0;
+ 	cpu_invltlb();
++	cpu_mfence();
+ 
+ 	/*
+ 	 * The last chunk must contain at least one page plus the message
+diff --git a/sys/vm/vm_contig.c b/sys/vm/vm_contig.c
+index 62deb42..f4bea30 100644
+--- a/sys/vm/vm_contig.c
++++ b/sys/vm/vm_contig.c
+@@ -406,8 +406,6 @@ again:
+ 			KKASSERT(m->object == NULL);
+ 			vm_page_unqueue_nowakeup(m);
+ 			m->valid = VM_PAGE_BITS_ALL;
+-			if (m->flags & PG_ZERO)
+-				vm_page_zero_count--;
+ 			KASSERT(m->dirty == 0,
+ 				("vm_contig_pg_alloc: page %p was dirty", m));
+ 			KKASSERT(m->wire_count == 0);
+diff --git a/sys/vm/vm_meter.c b/sys/vm/vm_meter.c
+index 9fa9e26..16f9fa7 100644
+--- a/sys/vm/vm_meter.c
++++ b/sys/vm/vm_meter.c
+@@ -245,6 +245,19 @@ vcnt(SYSCTL_HANDLER_ARGS)
+ 	return(SYSCTL_OUT(req, &count, sizeof(int)));
+ }
+ 
++static
++int
++vzerocnt(SYSCTL_HANDLER_ARGS)
++{
++	int count = 0;
++	int i;
++
++	for (i = 0; i < PQ_L2_SIZE; ++i) {
++		count += vm_page_queues[PQ_FREE+i].zero_count;
++	}
++	return(SYSCTL_OUT(req, &count, sizeof(int)));
++}
++
+ /*
+  * No requirements.
+  */
+@@ -407,9 +420,8 @@ SYSCTL_UINT(_vm_stats_vm, OID_AUTO,
+ SYSCTL_UINT(_vm_stats_vm, OID_AUTO,
+ 	v_interrupt_free_min, CTLFLAG_RD, &vmstats.v_interrupt_free_min, 0,
+ 	"Reserved number of pages for int code");
+-SYSCTL_INT(_vm_stats_misc, OID_AUTO,
+-	zero_page_count, CTLFLAG_RD, &vm_page_zero_count, 0,
+-	"Number of zeroing pages");
++SYSCTL_PROC(_vm_stats_misc, OID_AUTO, zero_page_count, CTLTYPE_UINT|CTLFLAG_RD,
++	0, 0, vzerocnt, "IU", "Pre-zerod VM pages");
+ 
+ /*
+  * No requirements.
+diff --git a/sys/vm/vm_page.c b/sys/vm/vm_page.c
+index 4302879..6b5af7a 100644
+--- a/sys/vm/vm_page.c
++++ b/sys/vm/vm_page.c
+@@ -162,7 +162,6 @@ vm_page_queue_init(void)
+  */
+ long first_page = 0;
+ int vm_page_array_size = 0;
+-int vm_page_zero_count = 0;
+ vm_page_t vm_page_array = NULL;
+ vm_paddr_t vm_low_phys_reserved;
+ 
+@@ -234,15 +233,20 @@ vm_add_new_page(vm_paddr_t pa)
+ 	atomic_add_int(&vmstats.v_page_count, 1);
+ 	atomic_add_int(&vmstats.v_free_count, 1);
+ 	vpq = &vm_page_queues[m->queue];
++#if 0
++	/* too expensive time-wise in large-mem configurations */
+ 	if ((vpq->flipflop & 15) == 0) {
+ 		pmap_zero_page(VM_PAGE_TO_PHYS(m));
+ 		m->flags |= PG_ZERO;
+ 		TAILQ_INSERT_TAIL(&vpq->pl, m, pageq);
+-		atomic_add_int(&vm_page_zero_count, 1);
++		++vpq->zero_count;
+ 	} else {
++#endif
+ 		TAILQ_INSERT_HEAD(&vpq->pl, m, pageq);
++#if 0
+ 	}
+ 	++vpq->flipflop;
++#endif
+ 	++vpq->lcnt;
+ }
+ 
+@@ -665,7 +669,7 @@ _vm_page_rem_queue_spinlocked(vm_page_t m)
+ 		m->queue = PQ_NONE;
+ 		vm_page_queues_spin_unlock(queue);
+ 		if ((queue - m->pc) == PQ_FREE && (m->flags & PG_ZERO))
+-			atomic_subtract_int(&vm_page_zero_count, 1);
++			--pq->zero_count;
+ 		if ((queue - m->pc) == PQ_CACHE || (queue - m->pc) == PQ_FREE)
+ 			return (queue - m->pc);
+ 	}
+@@ -699,7 +703,7 @@ _vm_page_add_queue_spinlocked(vm_page_t m, u_short queue, int athead)
+ 		if (queue - m->pc == PQ_FREE) {
+ 			if (m->flags & PG_ZERO) {
+ 				TAILQ_INSERT_TAIL(&pq->pl, m, pageq);
+-				atomic_add_int(&vm_page_zero_count, 1);
++				++pq->zero_count;
+ 			} else {
+ 				TAILQ_INSERT_HEAD(&pq->pl, m, pageq);
+ 			}
+diff --git a/sys/vm/vm_page.h b/sys/vm/vm_page.h
+index 32b72fe..1310ce8 100644
+--- a/sys/vm/vm_page.h
++++ b/sys/vm/vm_page.h
+@@ -265,8 +265,10 @@ struct vpgqueues {
+ 	int	lcnt;
+ 	int	flipflop;	/* probably not the best place */
+ 	struct spinlock spin;
++	int	zero_count;	/* only applies to PQ_FREE queues */
++	int	unused00;
+ 	char	unused[64 - sizeof(struct pglist) -
+-			sizeof(int *) - sizeof(int) * 2];
++			sizeof(int *) - sizeof(int) * 4];
+ };
+ 
+ extern struct vpgqueues vm_page_queues[PQ_COUNT];
+@@ -355,7 +357,6 @@ extern struct vpgqueues vm_page_queues[PQ_COUNT];
+  *
+  */
+ 
+-extern int vm_page_zero_count;
+ extern struct vm_page *vm_page_array;	/* First resident page in table */
+ extern int vm_page_array_size;		/* number of vm_page_t's */
+ extern long first_page;			/* first physical page number */
+diff --git a/sys/vm/vm_zeroidle.c b/sys/vm/vm_zeroidle.c
+index 4eb0192..bec3d7c 100644
+--- a/sys/vm/vm_zeroidle.c
++++ b/sys/vm/vm_zeroidle.c
+@@ -93,8 +93,6 @@ enum zeroidle_state {
+ #define DEFAULT_SLEEP_TIME	(hz / 10)
+ #define LONG_SLEEP_TIME		(hz * 10)
+ 
+-static int zero_state;
+-
+ /*
+  * Attempt to maintain approximately 1/2 of our free pages in a
+  * PG_ZERO'd state. Add some hysteresis to (attempt to) avoid
+@@ -106,26 +104,33 @@ static int zero_state;
+  * Returns non-zero if pages should be zerod.
+  */
+ static int
+-vm_page_zero_check(void)
++vm_page_zero_check(int *zero_countp, int *zero_statep)
+ {
++	int i;
++
++	*zero_countp = 0;
+ 	if (idlezero_enable == 0)
+ 		return (0);
+-	if (zero_state == 0) {
++	for (i = 0; i < PQ_L2_SIZE; ++i) {
++		struct vpgqueues *vpq = &vm_page_queues[PQ_FREE + i];
++		*zero_countp += vpq->zero_count;
++	}
++	if (*zero_statep == 0) {
+ 		/*
+ 		 * Wait for the count to fall to LO before starting
+ 		 * to zero pages.
+ 		 */
+-		if (vm_page_zero_count <= ZIDLE_LO(vmstats.v_free_count))
+-			zero_state = 1;
++		if (*zero_countp <= ZIDLE_LO(vmstats.v_free_count))
++			*zero_statep = 1;
+ 	} else {
+ 		/*
+ 		 * Once we are zeroing pages wait for the count to
+ 		 * increase to HI before we stop zeroing pages.
+ 		 */
+-		if (vm_page_zero_count >= ZIDLE_HI(vmstats.v_free_count))
+-			zero_state = 0;
++		if (*zero_countp >= ZIDLE_HI(vmstats.v_free_count))
++			*zero_statep = 0;
+ 	}
+-	return (zero_state);
++	return (*zero_statep);
+ }
+ 
+ /*
+@@ -133,11 +138,11 @@ vm_page_zero_check(void)
+  * when there is an excess of zeroed pages.
+  */
+ static int
+-vm_page_zero_time(void)
++vm_page_zero_time(int zero_count)
+ {
+ 	if (idlezero_enable == 0)
+ 		return (LONG_SLEEP_TIME);
+-	if (vm_page_zero_count >= ZIDLE_HI(vmstats.v_free_count))
++	if (zero_count >= ZIDLE_HI(vmstats.v_free_count))
+ 		return (LONG_SLEEP_TIME);
+ 	return (DEFAULT_SLEEP_TIME);
+ }
+@@ -146,7 +151,7 @@ vm_page_zero_time(void)
+  * MPSAFE thread
+  */
+ static void
+-vm_pagezero(void __unused *arg)
++vm_pagezero(void *arg)
+ {
+ 	vm_page_t m = NULL;
+ 	struct lwbuf *lwb = NULL;
+@@ -156,6 +161,8 @@ vm_pagezero(void __unused *arg)
+ 	int npages = 0;
+ 	int sleep_time;	
+ 	int i = 0;
++	int cpu = (int)(intptr_t)arg;
++	int zero_state = 0;
+ 
+ 	/*
+ 	 * Adjust thread parameters before entering our loop.  The thread
+@@ -168,22 +175,24 @@ vm_pagezero(void __unused *arg)
+ 	 * with it released until tokenization is finished.
+ 	 */
+ 	lwkt_setpri_self(TDPRI_IDLE_WORK);
+-	lwkt_setcpu_self(globaldata_find(ncpus - 1));
++	lwkt_setcpu_self(globaldata_find(cpu));
+ 	sleep_time = DEFAULT_SLEEP_TIME;
+ 
+ 	/*
+ 	 * Loop forever
+ 	 */
+ 	for (;;) {
++		int zero_count;
++
+ 		switch(state) {
+ 		case STATE_IDLE:
+ 			/*
+ 			 * Wait for work.
+ 			 */
+ 			tsleep(&zero_state, 0, "pgzero", sleep_time);
+-			if (vm_page_zero_check())
++			if (vm_page_zero_check(&zero_count, &zero_state))
+ 				npages = idlezero_rate / 10;
+-			sleep_time = vm_page_zero_time();
++			sleep_time = vm_page_zero_time(zero_count);
+ 			if (npages)
+ 				state = STATE_GET_PAGE;	/* Fallthrough */
+ 			break;
+@@ -234,15 +243,16 @@ vm_pagezero(void __unused *arg)
+ static void
+ pagezero_start(void __unused *arg)
+ {
+-	int error;
+ 	struct thread *td;
++	int i;
+ 
+ 	if (idlezero_nocache < 0 && (cpu_mi_feature & CPU_MI_BZERONT))
+ 		idlezero_nocache = 1;
+ 
+-	error = kthread_create(vm_pagezero, NULL, &td, "pagezero");
+-	if (error)
+-		panic("pagezero_start: error %d", error);
++	for (i = 0; i < ncpus; ++i) {
++		kthread_create(vm_pagezero, (void *)(intptr_t)i,
++			       &td, "pagezero %d", i);
++	}
+ }
+ 
+ SYSINIT(pagezero, SI_SUB_KTHREAD_VM, SI_ORDER_ANY, pagezero_start, NULL);
+-- 
+2.7.2
+

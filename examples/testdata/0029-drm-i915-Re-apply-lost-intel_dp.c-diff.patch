@@ -1,0 +1,39 @@
+From 928dd978ae1b2b380a7ebd92dd2d5f86ae1acaef Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Fri, 20 May 2016 18:54:04 +0300
+Subject: [PATCH 029/100] drm/i915: Re-apply lost intel_dp.c diff.
+
+Bring back intel_dp.c part of
+9c52345db761baa0a08634b3e93a233804b7a91b
+  Also reduce spam on laptops with eDP panels on i915 load.
+  Great opportunity to use just implemented DRM_ERROR_RATELIMITED()
+  macro that uses krateprintf().
+
+Issue is still there.
+---
+ sys/dev/drm/i915/intel_dp.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/sys/dev/drm/i915/intel_dp.c b/sys/dev/drm/i915/intel_dp.c
+index b76d475f..c6c8169 100644
+--- a/sys/dev/drm/i915/intel_dp.c
++++ b/sys/dev/drm/i915/intel_dp.c
+@@ -1960,8 +1960,15 @@ void intel_edp_panel_vdd_on(struct intel_dp *intel_dp)
+ 	vdd = edp_panel_vdd_on(intel_dp);
+ 	pps_unlock(intel_dp);
+ 
++#if 1
++/* XXX: limit dmesg spam to 16 warnings instead of 137, where is the bug? */
++	if(!vdd)
++		DRM_ERROR_RATELIMITED("eDP port %c VDD already requested on\n",
++		    port_name(dp_to_dig_port(intel_dp)->port));
++#else
+ 	I915_STATE_WARN(!vdd, "eDP port %c VDD already requested on\n",
+ 	     port_name(dp_to_dig_port(intel_dp)->port));
++#endif
+ }
+ 
+ static void edp_panel_vdd_off_sync(struct intel_dp *intel_dp)
+-- 
+2.7.2
+

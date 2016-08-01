@@ -1,0 +1,42 @@
+From d4c6ae4e3d373751c79ca4322285cd3bcc2a71d4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Wed, 20 Jul 2016 21:36:27 +0200
+Subject: [PATCH 017/100] drm/linux: Add ktime_to_us() and ktime_us_delta()
+
+---
+ sys/dev/drm/include/linux/ktime.h | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/sys/dev/drm/include/linux/ktime.h b/sys/dev/drm/include/linux/ktime.h
+index 25a936a..c1a10a4 100644
+--- a/sys/dev/drm/include/linux/ktime.h
++++ b/sys/dev/drm/include/linux/ktime.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015 François Tigeot
++ * Copyright (c) 2015-2016 François Tigeot
+  * All rights reserved.
+  *
+  * Redistribution and use in source and binary forms, with or without
+@@ -37,6 +37,18 @@ union ktime {
+ 
+ typedef union ktime ktime_t;
+ 
++static inline s64
++ktime_to_us(const ktime_t kt)
++{
++	return kt.tv64 / NSEC_PER_USEC;
++}
++
++static inline s64
++ktime_us_delta(const ktime_t later, const ktime_t earlier)
++{
++	return later.tv64 - earlier.tv64;
++}
++
+ static inline int64_t ktime_to_ns(ktime_t kt)
+ {
+ 	return kt.tv64;
+-- 
+2.7.2
+

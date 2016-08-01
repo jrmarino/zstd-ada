@@ -1,0 +1,840 @@
+From 0e1ba51b35ff9d644621952e2374263d363a7c67 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Sat, 23 Jul 2016 11:12:44 +0200
+Subject: [PATCH 041/100] drm: Sync a few headers with Linux 4.4
+
+---
+ sys/dev/drm/drm_agpsupport.c                 |   4 -
+ sys/dev/drm/drm_ioctl.c                      |   2 +
+ sys/dev/drm/drm_memory.c                     |   1 -
+ sys/dev/drm/drm_vma_manager.c                | 195 +++++++++++++++++++++++----
+ sys/dev/drm/include/drm/drm_agpsupport.h     |  60 +--------
+ sys/dev/drm/include/drm/drm_crtc.h           |   5 -
+ sys/dev/drm/include/drm/drm_dp_mst_helper.h  |   8 +-
+ sys/dev/drm/include/drm/drm_gem_cma_helper.h |  88 ++++--------
+ sys/dev/drm/include/drm/drm_of.h             |  13 ++
+ sys/dev/drm/include/drm/drm_os_linux.h       |  56 ++++----
+ sys/dev/drm/include/drm/drm_vma_manager.h    |  24 +---
+ sys/dev/drm/include/drm/ttm/ttm_bo_driver.h  |   2 +-
+ 12 files changed, 256 insertions(+), 202 deletions(-)
+
+diff --git a/sys/dev/drm/drm_agpsupport.c b/sys/dev/drm/drm_agpsupport.c
+index 2f6c6e7..ebadbdd 100644
+--- a/sys/dev/drm/drm_agpsupport.c
++++ b/sys/dev/drm/drm_agpsupport.c
+@@ -35,8 +35,6 @@
+ #include <linux/module.h>
+ #include "drm_legacy.h"
+ 
+-#if __OS_HAS_AGP
+-
+ #include <dev/agp/agpreg.h>
+ #include <bus/pci/pcireg.h>
+ 
+@@ -547,5 +545,3 @@ void drm_agp_clear(struct drm_device *dev)
+ 	dev->agp->acquired = 0;
+ 	dev->agp->enabled = 0;
+ }
+-
+-#endif /* __OS_HAS_AGP */
+diff --git a/sys/dev/drm/drm_ioctl.c b/sys/dev/drm/drm_ioctl.c
+index d4990ef..e7d665f 100644
+--- a/sys/dev/drm/drm_ioctl.c
++++ b/sys/dev/drm/drm_ioctl.c
+@@ -620,6 +620,7 @@ static const struct drm_ioctl_desc drm_ioctls[] = {
+ 
+ 	DRM_IOCTL_DEF(DRM_IOCTL_CONTROL, drm_control, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+ 
++#if IS_ENABLED(CONFIG_AGP)
+ 	DRM_IOCTL_DEF(DRM_IOCTL_AGP_ACQUIRE, drm_agp_acquire_ioctl, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_AGP_RELEASE, drm_agp_release_ioctl, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_AGP_ENABLE, drm_agp_enable_ioctl, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+@@ -628,6 +629,7 @@ static const struct drm_ioctl_desc drm_ioctls[] = {
+ 	DRM_IOCTL_DEF(DRM_IOCTL_AGP_FREE, drm_agp_free_ioctl, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_AGP_BIND, drm_agp_bind_ioctl, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_AGP_UNBIND, drm_agp_unbind_ioctl, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
++#endif
+ 
+ 	DRM_IOCTL_DEF(DRM_IOCTL_SG_ALLOC, drm_legacy_sg_alloc, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_SG_FREE, drm_legacy_sg_free, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+diff --git a/sys/dev/drm/drm_memory.c b/sys/dev/drm/drm_memory.c
+index 0604558..2bd5198 100644
+--- a/sys/dev/drm/drm_memory.c
++++ b/sys/dev/drm/drm_memory.c
+@@ -39,7 +39,6 @@
+ #include <drm/drmP.h>
+ #include "drm_legacy.h"
+ 
+-#define CONFIG_AGP 1
+ #if IS_ENABLED(CONFIG_AGP)
+ 
+ #ifdef HAVE_PAGE_AGP
+diff --git a/sys/dev/drm/drm_vma_manager.c b/sys/dev/drm/drm_vma_manager.c
+index 13e9616..5a3caab 100644
+--- a/sys/dev/drm/drm_vma_manager.c
++++ b/sys/dev/drm/drm_vma_manager.c
+@@ -49,8 +49,7 @@
+  *
+  * You must not use multiple offset managers on a single address_space.
+  * Otherwise, mm-core will be unable to tear down memory mappings as the VM will
+- * no longer be linear. Please use VM_NONLINEAR in that case and implement your
+- * own offset managers.
++ * no longer be linear.
+  *
+  * This offset manager works on page-based addresses. That is, every argument
+  * and return code (with the exception of drm_vma_node_offset_addr()) is given
+@@ -58,6 +57,13 @@
+  * must always be page-aligned (as usual).
+  * If you want to get a valid byte-based user-space address for a given offset,
+  * please see drm_vma_node_offset_addr().
++ *
++ * Additionally to offset management, the vma offset manager also handles access
++ * management. For every open-file context that is allowed to access a given
++ * node, you must call drm_vma_node_allow(). Otherwise, an mmap() call on this
++ * open-file with the offset of the node will fail with -EACCES. To revoke
++ * access again, use drm_vma_node_revoke(). However, the caller is responsible
++ * for destroying already existing mappings, if required.
+  */
+ 
+ /**
+@@ -115,37 +121,21 @@ EXPORT_SYMBOL(drm_vma_offset_manager_destroy);
+  * region and the given node will be returned, as long as the node spans the
+  * whole requested area (given the size in number of pages as @pages).
+  *
+- * RETURNS:
+- * Returns NULL if no suitable node can be found. Otherwise, the best match
+- * is returned. It's the caller's responsibility to make sure the node doesn't
+- * get destroyed before the caller can access it.
+- */
+-struct drm_vma_offset_node *drm_vma_offset_lookup(struct drm_vma_offset_manager *mgr,
+-						  unsigned long start,
+-						  unsigned long pages)
+-{
+-	struct drm_vma_offset_node *node;
+-
+-	lockmgr(&mgr->vm_lock, LK_EXCLUSIVE);
+-	node = drm_vma_offset_lookup_locked(mgr, start, pages);
+-	lockmgr(&mgr->vm_lock, LK_RELEASE);
+-
+-	return node;
+-}
+-EXPORT_SYMBOL(drm_vma_offset_lookup);
+-
+-/**
+- * drm_vma_offset_lookup_locked() - Find node in offset space
+- * @mgr: Manager object
+- * @start: Start address for object (page-based)
+- * @pages: Size of object (page-based)
++ * Note that before lookup the vma offset manager lookup lock must be acquired
++ * with drm_vma_offset_lock_lookup(). See there for an example. This can then be
++ * used to implement weakly referenced lookups using kref_get_unless_zero().
+  *
+- * Same as drm_vma_offset_lookup() but requires the caller to lock offset lookup
+- * manually. See drm_vma_offset_lock_lookup() for an example.
++ * Example:
++ *     drm_vma_offset_lock_lookup(mgr);
++ *     node = drm_vma_offset_lookup_locked(mgr);
++ *     if (node)
++ *         kref_get_unless_zero(container_of(node, sth, entr));
++ *     drm_vma_offset_unlock_lookup(mgr);
+  *
+  * RETURNS:
+  * Returns NULL if no suitable node can be found. Otherwise, the best match
+- * is returned.
++ * is returned. It's the caller's responsibility to make sure the node doesn't
++ * get destroyed before the caller can access it.
+  */
+ struct drm_vma_offset_node *drm_vma_offset_lookup_locked(struct drm_vma_offset_manager *mgr,
+ 							 unsigned long start,
+@@ -279,3 +269,150 @@ void drm_vma_offset_remove(struct drm_vma_offset_manager *mgr,
+ 	lockmgr(&mgr->vm_lock, LK_RELEASE);
+ }
+ EXPORT_SYMBOL(drm_vma_offset_remove);
++
++/**
++ * drm_vma_node_allow - Add open-file to list of allowed users
++ * @node: Node to modify
++ * @filp: Open file to add
++ *
++ * Add @filp to the list of allowed open-files for this node. If @filp is
++ * already on this list, the ref-count is incremented.
++ *
++ * The list of allowed-users is preserved across drm_vma_offset_add() and
++ * drm_vma_offset_remove() calls. You may even call it if the node is currently
++ * not added to any offset-manager.
++ *
++ * You must remove all open-files the same number of times as you added them
++ * before destroying the node. Otherwise, you will leak memory.
++ *
++ * This is locked against concurrent access internally.
++ *
++ * RETURNS:
++ * 0 on success, negative error code on internal failure (out-of-mem)
++ */
++int drm_vma_node_allow(struct drm_vma_offset_node *node, struct file *filp)
++{
++	struct rb_node **iter;
++	struct rb_node *parent = NULL;
++	struct drm_vma_offset_file *new, *entry;
++	int ret = 0;
++
++	/* Preallocate entry to avoid atomic allocations below. It is quite
++	 * unlikely that an open-file is added twice to a single node so we
++	 * don't optimize for this case. OOM is checked below only if the entry
++	 * is actually used. */
++	new = kmalloc(sizeof(*entry), M_DRM, M_WAITOK);
++
++	lockmgr(&node->vm_lock, LK_EXCLUSIVE);
++
++	iter = &node->vm_files.rb_node;
++
++	while (likely(*iter)) {
++		parent = *iter;
++		entry = rb_entry(*iter, struct drm_vma_offset_file, vm_rb);
++
++		if (filp == entry->vm_filp) {
++			entry->vm_count++;
++			goto unlock;
++		} else if (filp > entry->vm_filp) {
++			iter = &(*iter)->rb_right;
++		} else {
++			iter = &(*iter)->rb_left;
++		}
++	}
++
++	if (!new) {
++		ret = -ENOMEM;
++		goto unlock;
++	}
++
++	new->vm_filp = filp;
++	new->vm_count = 1;
++	rb_link_node(&new->vm_rb, parent, iter);
++	rb_insert_color(&new->vm_rb, &node->vm_files);
++	new = NULL;
++
++unlock:
++	lockmgr(&node->vm_lock, LK_RELEASE);
++	kfree(new);
++	return ret;
++}
++EXPORT_SYMBOL(drm_vma_node_allow);
++
++/**
++ * drm_vma_node_revoke - Remove open-file from list of allowed users
++ * @node: Node to modify
++ * @filp: Open file to remove
++ *
++ * Decrement the ref-count of @filp in the list of allowed open-files on @node.
++ * If the ref-count drops to zero, remove @filp from the list. You must call
++ * this once for every drm_vma_node_allow() on @filp.
++ *
++ * This is locked against concurrent access internally.
++ *
++ * If @filp is not on the list, nothing is done.
++ */
++void drm_vma_node_revoke(struct drm_vma_offset_node *node, struct file *filp)
++{
++	struct drm_vma_offset_file *entry;
++	struct rb_node *iter;
++
++	lockmgr(&node->vm_lock, LK_EXCLUSIVE);
++
++	iter = node->vm_files.rb_node;
++	while (likely(iter)) {
++		entry = rb_entry(iter, struct drm_vma_offset_file, vm_rb);
++		if (filp == entry->vm_filp) {
++			if (!--entry->vm_count) {
++				rb_erase(&entry->vm_rb, &node->vm_files);
++				kfree(entry);
++			}
++			break;
++		} else if (filp > entry->vm_filp) {
++			iter = iter->rb_right;
++		} else {
++			iter = iter->rb_left;
++		}
++	}
++
++	lockmgr(&node->vm_lock, LK_RELEASE);
++}
++EXPORT_SYMBOL(drm_vma_node_revoke);
++
++/**
++ * drm_vma_node_is_allowed - Check whether an open-file is granted access
++ * @node: Node to check
++ * @filp: Open-file to check for
++ *
++ * Search the list in @node whether @filp is currently on the list of allowed
++ * open-files (see drm_vma_node_allow()).
++ *
++ * This is locked against concurrent access internally.
++ *
++ * RETURNS:
++ * true iff @filp is on the list
++ */
++bool drm_vma_node_is_allowed(struct drm_vma_offset_node *node,
++			     struct file *filp)
++{
++	struct drm_vma_offset_file *entry;
++	struct rb_node *iter;
++
++	lockmgr(&node->vm_lock, LK_EXCLUSIVE);
++
++	iter = node->vm_files.rb_node;
++	while (likely(iter)) {
++		entry = rb_entry(iter, struct drm_vma_offset_file, vm_rb);
++		if (filp == entry->vm_filp)
++			break;
++		else if (filp > entry->vm_filp)
++			iter = iter->rb_right;
++		else
++			iter = iter->rb_left;
++	}
++
++	lockmgr(&node->vm_lock, LK_RELEASE);
++
++	return iter;
++}
++EXPORT_SYMBOL(drm_vma_node_is_allowed);
+diff --git a/sys/dev/drm/include/drm/drm_agpsupport.h b/sys/dev/drm/include/drm/drm_agpsupport.h
+index 4c7462f..2b50a34 100644
+--- a/sys/dev/drm/include/drm/drm_agpsupport.h
++++ b/sys/dev/drm/include/drm/drm_agpsupport.h
+@@ -6,6 +6,7 @@
+ #include <linux/mm.h>
+ #include <linux/mutex.h>
+ #include <linux/types.h>
++#include <linux/kconfig.h>
+ #include <sys/agpio.h>
+ #include <dev/agp/agpvar.h>
+ #include <uapi_drm/drm.h>
+@@ -13,8 +14,6 @@
+ struct drm_device;
+ struct drm_file;
+ 
+-#define __OS_HAS_AGP	1
+-
+ struct drm_agp_head {
+ 	device_t	agpdev;
+ 	struct agp_info	agp_info;
+@@ -28,7 +27,8 @@ struct drm_agp_head {
+ 	unsigned long page_mask;
+ };
+ 
+-#if __OS_HAS_AGP
++#define CONFIG_AGP 1
++#if IS_ENABLED(CONFIG_AGP)
+ 
+ #ifdef __linux__
+ void drm_free_agp(struct agp_memory * handle, int pages);
+@@ -68,9 +68,8 @@ int drm_agp_bind(struct drm_device *dev, struct drm_agp_binding *request);
+ int drm_agp_bind_ioctl(struct drm_device *dev, void *data,
+ 		       struct drm_file *file_priv);
+ 
+-#else /* __OS_HAS_AGP */
++#else /* CONFIG_AGP */
+ 
+-#ifdef __linux__
+ static inline void drm_free_agp(struct agp_memory * handle, int pages)
+ {
+ }
+@@ -93,7 +92,6 @@ static inline struct agp_memory *drm_agp_bind_pages(struct drm_device *dev,
+ {
+ 	return NULL;
+ }
+-#endif
+ 
+ static inline struct drm_agp_head *drm_agp_init(struct drm_device *dev)
+ {
+@@ -109,95 +107,47 @@ static inline int drm_agp_acquire(struct drm_device *dev)
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_acquire_ioctl(struct drm_device *dev, void *data,
+-					struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_release(struct drm_device *dev)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_release_ioctl(struct drm_device *dev, void *data,
+-					struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_enable(struct drm_device *dev,
+ 				 struct drm_agp_mode mode)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_enable_ioctl(struct drm_device *dev, void *data,
+-				       struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_info(struct drm_device *dev,
+ 			       struct drm_agp_info *info)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_info_ioctl(struct drm_device *dev, void *data,
+-				     struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_alloc(struct drm_device *dev,
+ 				struct drm_agp_buffer *request)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_alloc_ioctl(struct drm_device *dev, void *data,
+-				      struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_free(struct drm_device *dev,
+ 			       struct drm_agp_buffer *request)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_free_ioctl(struct drm_device *dev, void *data,
+-				     struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_unbind(struct drm_device *dev,
+ 				 struct drm_agp_binding *request)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_unbind_ioctl(struct drm_device *dev, void *data,
+-				       struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+ static inline int drm_agp_bind(struct drm_device *dev,
+ 			       struct drm_agp_binding *request)
+ {
+ 	return -ENODEV;
+ }
+ 
+-static inline int drm_agp_bind_ioctl(struct drm_device *dev, void *data,
+-				     struct drm_file *file_priv)
+-{
+-	return -ENODEV;
+-}
+-
+-#endif /* __OS_HAS_AGP */
++#endif /* CONFIG_AGP */
+ 
+ #endif /* _DRM_AGPSUPPORT_H_ */
+diff --git a/sys/dev/drm/include/drm/drm_crtc.h b/sys/dev/drm/include/drm/drm_crtc.h
+index b79c63c..fd55950 100644
+--- a/sys/dev/drm/include/drm/drm_crtc.h
++++ b/sys/dev/drm/include/drm/drm_crtc.h
+@@ -406,9 +406,6 @@ struct drm_crtc_funcs {
+  * @enabled: is this CRTC enabled?
+  * @mode: current mode timings
+  * @hwmode: mode timings as programmed to hw regs
+- * @invert_dimensions: for purposes of error checking crtc vs fb sizes,
+- *    invert the width/height of the crtc.  This is used if the driver
+- *    is performing 90 or 270 degree rotated scanout
+  * @x: x position on screen
+  * @y: y position on screen
+  * @funcs: CRTC control functions
+@@ -457,8 +454,6 @@ struct drm_crtc {
+ 	 */
+ 	struct drm_display_mode hwmode;
+ 
+-	bool invert_dimensions;
+-
+ 	int x, y;
+ 	const struct drm_crtc_funcs *funcs;
+ 
+diff --git a/sys/dev/drm/include/drm/drm_dp_mst_helper.h b/sys/dev/drm/include/drm/drm_dp_mst_helper.h
+index a21cb45..067a5a6 100644
+--- a/sys/dev/drm/include/drm/drm_dp_mst_helper.h
++++ b/sys/dev/drm/include/drm/drm_dp_mst_helper.h
+@@ -253,6 +253,7 @@ struct drm_dp_remote_dpcd_write {
+ 	u8 *bytes;
+ };
+ 
++#define DP_REMOTE_I2C_READ_MAX_TRANSACTIONS 4
+ struct drm_dp_remote_i2c_read {
+ 	u8 num_transactions;
+ 	u8 port_number;
+@@ -262,7 +263,7 @@ struct drm_dp_remote_i2c_read {
+ 		u8 *bytes;
+ 		u8 no_stop_bit;
+ 		u8 i2c_transaction_delay;
+-	} transactions[4];
++	} transactions[DP_REMOTE_I2C_READ_MAX_TRANSACTIONS];
+ 	u8 read_i2c_device_id;
+ 	u8 num_bytes_read;
+ };
+@@ -374,6 +375,7 @@ struct drm_dp_mst_topology_mgr;
+ struct drm_dp_mst_topology_cbs {
+ 	/* create a connector for a port */
+ 	struct drm_connector *(*add_connector)(struct drm_dp_mst_topology_mgr *mgr, struct drm_dp_mst_port *port, const char *path);
++	void (*register_connector)(struct drm_connector *connector);
+ 	void (*destroy_connector)(struct drm_dp_mst_topology_mgr *mgr,
+ 				  struct drm_connector *connector);
+ 	void (*hotplug)(struct drm_dp_mst_topology_mgr *mgr);
+@@ -463,6 +465,10 @@ struct drm_dp_mst_topology_mgr {
+ 	struct work_struct work;
+ 
+ 	struct work_struct tx_work;
++
++	struct list_head destroy_connector_list;
++	struct lock destroy_connector_lock;
++	struct work_struct destroy_connector_work;
+ };
+ 
+ int drm_dp_mst_topology_mgr_init(struct drm_dp_mst_topology_mgr *mgr, struct device *dev, struct drm_dp_aux *aux, int max_dpcd_transaction_bytes, int max_payloads, int conn_base_id);
+diff --git a/sys/dev/drm/include/drm/drm_gem_cma_helper.h b/sys/dev/drm/include/drm/drm_gem_cma_helper.h
+index 8e1c01d..acd6af8 100644
+--- a/sys/dev/drm/include/drm/drm_gem_cma_helper.h
++++ b/sys/dev/drm/include/drm/drm_gem_cma_helper.h
+@@ -2,7 +2,15 @@
+ #define __DRM_GEM_CMA_HELPER_H__
+ 
+ #include <drm/drmP.h>
+-
++#include <drm/drm_gem.h>
++
++/**
++ * struct drm_gem_cma_object - GEM object backed by CMA memory allocations
++ * @base: base GEM object
++ * @paddr: physical address of the backing memory
++ * @sgt: scatter/gather table for imported PRIME buffers
++ * @vaddr: kernel virtual address of the backing memory
++ */
+ struct drm_gem_cma_object {
+ 	struct drm_gem_object base;
+ 	dma_addr_t paddr;
+@@ -18,77 +26,30 @@ to_drm_gem_cma_obj(struct drm_gem_object *gem_obj)
+ 	return container_of(gem_obj, struct drm_gem_cma_object, base);
+ }
+ 
+-/* free gem object. */
++/* free GEM object */
+ void drm_gem_cma_free_object(struct drm_gem_object *gem_obj);
+ 
+-/* create memory region for drm framebuffer. */
+-int drm_gem_cma_dumb_create(struct drm_file *file_priv,
+-		struct drm_device *drm, struct drm_mode_create_dumb *args);
+-
+-/* map memory region for drm framebuffer to user space. */
+-int drm_gem_cma_dumb_map_offset(struct drm_file *file_priv,
+-		struct drm_device *drm, uint32_t handle, uint64_t *offset);
+-
+-/* set vm_flags and we can change the vm attribute to other one at here. */
+-int drm_gem_cma_mmap(struct file *filp, struct vm_area_struct *vma);
+-
+-/* allocate physical memory. */
+-struct drm_gem_cma_object *drm_gem_cma_create(struct drm_device *drm,
+-		unsigned int size);
+-
+-extern const struct vm_operations_struct drm_gem_cma_vm_ops;
+-
+-#ifdef CONFIG_DEBUG_FS
+-void drm_gem_cma_describe(struct drm_gem_cma_object *obj, struct seq_file *m);
+-#endif
+-
+-struct sg_table *drm_gem_cma_prime_get_sg_table(struct drm_gem_object *obj);
+-struct drm_gem_object *
+-drm_gem_cma_prime_import_sg_table(struct drm_device *dev, size_t size,
+-				  struct sg_table *sgt);
+-int drm_gem_cma_prime_mmap(struct drm_gem_object *obj,
+-			   struct vm_area_struct *vma);
+-void *drm_gem_cma_prime_vmap(struct drm_gem_object *obj);
+-void drm_gem_cma_prime_vunmap(struct drm_gem_object *obj, void *vaddr);
+-
+-#endif /* __DRM_GEM_CMA_HELPER_H__ */
+-#ifndef __DRM_GEM_CMA_HELPER_H__
+-#define __DRM_GEM_CMA_HELPER_H__
+-
+-#include <drm/drmP.h>
+-
+-struct drm_gem_cma_object {
+-	struct drm_gem_object base;
+-	dma_addr_t paddr;
+-	struct sg_table *sgt;
+-
+-	/* For objects with DMA memory allocated by GEM CMA */
+-	void *vaddr;
+-};
+-
+-static inline struct drm_gem_cma_object *
+-to_drm_gem_cma_obj(struct drm_gem_object *gem_obj)
+-{
+-	return container_of(gem_obj, struct drm_gem_cma_object, base);
+-}
+-
+-/* free gem object. */
+-void drm_gem_cma_free_object(struct drm_gem_object *gem_obj);
++/* create memory region for DRM framebuffer */
++int drm_gem_cma_dumb_create_internal(struct drm_file *file_priv,
++				     struct drm_device *drm,
++				     struct drm_mode_create_dumb *args);
+ 
+-/* create memory region for drm framebuffer. */
++/* create memory region for DRM framebuffer */
+ int drm_gem_cma_dumb_create(struct drm_file *file_priv,
+-		struct drm_device *drm, struct drm_mode_create_dumb *args);
++			    struct drm_device *drm,
++			    struct drm_mode_create_dumb *args);
+ 
+-/* map memory region for drm framebuffer to user space. */
++/* map memory region for DRM framebuffer to user space */
+ int drm_gem_cma_dumb_map_offset(struct drm_file *file_priv,
+-		struct drm_device *drm, uint32_t handle, uint64_t *offset);
++				struct drm_device *drm, u32 handle,
++				u64 *offset);
+ 
+-/* set vm_flags and we can change the vm attribute to other one at here. */
++/* set vm_flags and we can change the VM attribute to other one at here */
+ int drm_gem_cma_mmap(struct file *filp, struct vm_area_struct *vma);
+ 
+-/* allocate physical memory. */
++/* allocate physical memory */
+ struct drm_gem_cma_object *drm_gem_cma_create(struct drm_device *drm,
+-		unsigned int size);
++					      size_t size);
+ 
+ extern const struct vm_operations_struct drm_gem_cma_vm_ops;
+ 
+@@ -98,7 +59,8 @@ void drm_gem_cma_describe(struct drm_gem_cma_object *obj, struct seq_file *m);
+ 
+ struct sg_table *drm_gem_cma_prime_get_sg_table(struct drm_gem_object *obj);
+ struct drm_gem_object *
+-drm_gem_cma_prime_import_sg_table(struct drm_device *dev, size_t size,
++drm_gem_cma_prime_import_sg_table(struct drm_device *dev,
++				  struct dma_buf_attachment *attach,
+ 				  struct sg_table *sgt);
+ int drm_gem_cma_prime_mmap(struct drm_gem_object *obj,
+ 			   struct vm_area_struct *vma);
+diff --git a/sys/dev/drm/include/drm/drm_of.h b/sys/dev/drm/include/drm/drm_of.h
+index 2441f71..8544665 100644
+--- a/sys/dev/drm/include/drm/drm_of.h
++++ b/sys/dev/drm/include/drm/drm_of.h
+@@ -1,18 +1,31 @@
+ #ifndef __DRM_OF_H__
+ #define __DRM_OF_H__
+ 
++struct component_master_ops;
++struct device;
+ struct drm_device;
+ struct device_node;
+ 
+ #ifdef CONFIG_OF
+ extern uint32_t drm_of_find_possible_crtcs(struct drm_device *dev,
+ 					   struct device_node *port);
++extern int drm_of_component_probe(struct device *dev,
++				  int (*compare_of)(struct device *, void *),
++				  const struct component_master_ops *m_ops);
+ #else
+ static inline uint32_t drm_of_find_possible_crtcs(struct drm_device *dev,
+ 						  struct device_node *port)
+ {
+ 	return 0;
+ }
++
++static inline int
++drm_of_component_probe(struct device *dev,
++		       int (*compare_of)(struct device *, void *),
++		       const struct component_master_ops *m_ops)
++{
++	return -EINVAL;
++}
+ #endif
+ 
+ #endif /* __DRM_OF_H__ */
+diff --git a/sys/dev/drm/include/drm/drm_os_linux.h b/sys/dev/drm/include/drm/drm_os_linux.h
+index b8e88c3..ef147ea 100644
+--- a/sys/dev/drm/include/drm/drm_os_linux.h
++++ b/sys/dev/drm/include/drm/drm_os_linux.h
+@@ -7,11 +7,11 @@
+ #include <sys/endian.h>
+ #include <sys/systm.h>
+ #include <sys/serialize.h>
++#include <linux/delay.h>
+ 
+ /* Handle the DRM options from kernel config. */
+ #ifdef __DragonFly__
+ #include "opt_drm.h"
+-
+ #ifdef DRM_DEBUG
+ #  if DRM_DEBUG>1
+ #    define DRM_DEBUG_DEFAULT_ON 2
+@@ -22,40 +22,44 @@
+ /* XXX disable DRM_LINUX for now to unbreak LINT64 */
+ #undef DRM_LINUX
+ #endif /* DRM_DEBUG */
++#endif /* DragonFly */
++
++#ifndef readq
++static inline u64 readq(void __iomem *reg)
++{
++	return ((u64) readl(reg)) | (((u64) readl(reg + 4UL)) << 32);
++}
++
++static inline void writeq(u64 val, void __iomem *reg)
++{
++	writel(val & 0xffffffff, reg);
++	writel(val >> 32, reg + 0x4UL);
++}
+ #endif
+ 
+ /** Current process ID */
+-#define DRM_CURRENTPID		(curproc != NULL ? curproc->p_pid : -1)
+-#define DRM_UDELAY(d)		DELAY(d)
++#define DRM_CURRENTPID			(curproc != NULL ? curproc->p_pid : -1)
++#define DRM_UDELAY(d)			DELAY(d)
+ /** Read a byte from a MMIO region */
+-#define DRM_READ8(map, offset)						\
+-	*(volatile u_int8_t *)(((vm_offset_t)(map)->handle) +		\
+-	    (vm_offset_t)(offset))
+-#define DRM_READ16(map, offset)						\
+-	le16toh(*(volatile u_int16_t *)(((vm_offset_t)(map)->handle) +	\
+-	    (vm_offset_t)(offset)))
+-#define DRM_READ32(map, offset)						\
+-	le32toh(*(volatile u_int32_t *)(((vm_offset_t)(map)->handle) +	\
+-	    (vm_offset_t)(offset)))
+-#define DRM_READ64(map, offset)						\
+-	le64toh(*(volatile u_int64_t *)(((vm_offset_t)(map)->handle) +	\
+-	    (vm_offset_t)(offset)))
+-#define DRM_WRITE8(map, offset, val)					\
+-	*(volatile u_int8_t *)(((vm_offset_t)(map)->handle) +		\
+-	    (vm_offset_t)(offset)) = val
+-#define DRM_WRITE16(map, offset, val)					\
+-	*(volatile u_int16_t *)(((vm_offset_t)(map)->handle) +		\
+-	    (vm_offset_t)(offset)) = htole16(val)
+-
++#define DRM_READ8(map, offset)		readb(((void __iomem *)(map)->handle) + (offset))
++/** Read a word from a MMIO region */
++#define DRM_READ16(map, offset)         readw(((void __iomem *)(map)->handle) + (offset))
++/** Read a dword from a MMIO region */
++#define DRM_READ32(map, offset)		readl(((void __iomem *)(map)->handle) + (offset))
++/** Write a byte into a MMIO region */
++#define DRM_WRITE8(map, offset, val)	writeb(val, ((void __iomem *)(map)->handle) + (offset))
++/** Write a word into a MMIO region */
++#define DRM_WRITE16(map, offset, val)   writew(val, ((void __iomem *)(map)->handle) + (offset))
++/** Write a dword into a MMIO region */
+ #define DRM_WRITE32(map, offset, val)					\
+ 	*(volatile u_int32_t *)(((vm_offset_t)(map)->handle) +		\
+ 	    (vm_offset_t)(offset)) = htole32(val)
+ 
+-#define DRM_WRITE64(map, offset, val)					\
+-	*(volatile u_int64_t *)(((vm_offset_t)(map)->handle) +		\
+-	    (vm_offset_t)(offset)) = htole64(val)
++/** Read a qword from a MMIO region - be careful using these unless you really understand them */
++#define DRM_READ64(map, offset)		readq(((void __iomem *)(map)->handle) + (offset))
++/** Write a qword into a MMIO region */
++#define DRM_WRITE64(map, offset, val)	writeq(val, ((void __iomem *)(map)->handle) + (offset))
+ 
+-/* Returns -errno to shared code */
+ #define DRM_WAIT_ON( ret, queue, timeout, condition )		\
+ for ( ret = 0 ; !ret && !(condition) ; ) {			\
+ 	lwkt_serialize_enter(&dev->irq_lock);			\
+diff --git a/sys/dev/drm/include/drm/drm_vma_manager.h b/sys/dev/drm/include/drm/drm_vma_manager.h
+index 20bf8e0..7672a28 100644
+--- a/sys/dev/drm/include/drm/drm_vma_manager.h
++++ b/sys/dev/drm/include/drm/drm_vma_manager.h
+@@ -53,9 +53,6 @@ void drm_vma_offset_manager_init(struct drm_vma_offset_manager *mgr,
+ 				 unsigned long page_offset, unsigned long size);
+ void drm_vma_offset_manager_destroy(struct drm_vma_offset_manager *mgr);
+ 
+-struct drm_vma_offset_node *drm_vma_offset_lookup(struct drm_vma_offset_manager *mgr,
+-						  unsigned long start,
+-						  unsigned long pages);
+ struct drm_vma_offset_node *drm_vma_offset_lookup_locked(struct drm_vma_offset_manager *mgr,
+ 							   unsigned long start,
+ 							   unsigned long pages);
+@@ -70,25 +67,25 @@ bool drm_vma_node_is_allowed(struct drm_vma_offset_node *node,
+ 			     struct file *filp);
+ 
+ /**
+- * drm_vma_offset_exact_lookup() - Look up node by exact address
++ * drm_vma_offset_exact_lookup_locked() - Look up node by exact address
+  * @mgr: Manager object
+  * @start: Start address (page-based, not byte-based)
+  * @pages: Size of object (page-based)
+  *
+- * Same as drm_vma_offset_lookup() but does not allow any offset into the node.
++ * Same as drm_vma_offset_lookup_locked() but does not allow any offset into the node.
+  * It only returns the exact object with the given start address.
+  *
+  * RETURNS:
+  * Node at exact start address @start.
+  */
+ static inline struct drm_vma_offset_node *
+-drm_vma_offset_exact_lookup(struct drm_vma_offset_manager *mgr,
+-			    unsigned long start,
+-			    unsigned long pages)
++drm_vma_offset_exact_lookup_locked(struct drm_vma_offset_manager *mgr,
++				   unsigned long start,
++				   unsigned long pages)
+ {
+ 	struct drm_vma_offset_node *node;
+ 
+-	node = drm_vma_offset_lookup(mgr, start, pages);
++	node = drm_vma_offset_lookup_locked(mgr, start, pages);
+ 	return (node && node->vm_node.start == start) ? node : NULL;
+ }
+ 
+@@ -96,7 +93,7 @@ drm_vma_offset_exact_lookup(struct drm_vma_offset_manager *mgr,
+  * drm_vma_offset_lock_lookup() - Lock lookup for extended private use
+  * @mgr: Manager object
+  *
+- * Lock VMA manager for extended lookups. Only *_locked() VMA function calls
++ * Lock VMA manager for extended lookups. Only locked VMA function calls
+  * are allowed while holding this lock. All other contexts are blocked from VMA
+  * until the lock is released via drm_vma_offset_unlock_lookup().
+  *
+@@ -107,13 +104,6 @@ drm_vma_offset_exact_lookup(struct drm_vma_offset_manager *mgr,
+  * not call any other VMA helpers while holding this lock.
+  *
+  * Note: You're in atomic-context while holding this lock!
+- *
+- * Example:
+- *   drm_vma_offset_lock_lookup(mgr);
+- *   node = drm_vma_offset_lookup_locked(mgr);
+- *   if (node)
+- *       kref_get_unless_zero(container_of(node, sth, entr));
+- *   drm_vma_offset_unlock_lookup(mgr);
+  */
+ static inline void drm_vma_offset_lock_lookup(struct drm_vma_offset_manager *mgr)
+ {
+diff --git a/sys/dev/drm/include/drm/ttm/ttm_bo_driver.h b/sys/dev/drm/include/drm/ttm/ttm_bo_driver.h
+index ce55586..6a621e2 100644
+--- a/sys/dev/drm/include/drm/ttm/ttm_bo_driver.h
++++ b/sys/dev/drm/include/drm/ttm/ttm_bo_driver.h
+@@ -1002,7 +1002,7 @@ extern vm_memattr_t ttm_io_prot(uint32_t caching_flags);
+ 
+ extern const struct ttm_mem_type_manager_func ttm_bo_manager_func;
+ 
+-#if (defined(CONFIG_AGP) || (defined(CONFIG_AGP_MODULE) && defined(MODULE)))
++#if (defined(CONFIG_AGP) || (defined(CONFIG_AGP_MODULE) && defined(MODULE))) && 0
+ #define TTM_HAS_AGP
+ #include <linux/agp_backend.h>
+ 
+-- 
+2.7.2
+

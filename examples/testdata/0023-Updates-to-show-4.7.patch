@@ -1,0 +1,79 @@
+From e2a21467e1252341b6d546b55d6357b66108a67d Mon Sep 17 00:00:00 2001
+From: "Justin C. Sherrill" <justin@shiningsilence.com>
+Date: Wed, 20 Jul 2016 21:09:51 -0400
+Subject: [PATCH 023/100] Updates to show "4.7".
+
+---
+ contrib/mdocml/config.h           | 2 +-
+ gnu/usr.bin/groff/tmac/mdoc.local | 3 ++-
+ sys/conf/newvers.sh               | 2 +-
+ sys/sys/param.h                   | 4 +++-
+ 4 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/contrib/mdocml/config.h b/contrib/mdocml/config.h
+index 0af82e8..2cff1d8 100644
+--- a/contrib/mdocml/config.h
++++ b/contrib/mdocml/config.h
+@@ -18,7 +18,7 @@
+ #define HAVE_STRPTIME
+ #define HAVE_STRSEP
+ 
+-#define OSNAME "DragonFly 4.5"
++#define OSNAME "DragonFly 4.7"
+ 
+ #if !defined(__BEGIN_DECLS)
+ #  ifdef __cplusplus
+diff --git a/gnu/usr.bin/groff/tmac/mdoc.local b/gnu/usr.bin/groff/tmac/mdoc.local
+index 8c22284..3d8cf13 100644
+--- a/gnu/usr.bin/groff/tmac/mdoc.local
++++ b/gnu/usr.bin/groff/tmac/mdoc.local
+@@ -69,7 +69,7 @@
+ .
+ .
+ .\" Default .Os value
+-.ds doc-default-operating-system DragonFly\~4.5
++.ds doc-default-operating-system DragonFly\~4.7
+ .
+ .
+ .\" DragonFly releases not found in doc-common
+@@ -97,6 +97,7 @@
+ .ds doc-operating-system-DragonFly-4.1 4.1
+ .ds doc-operating-system-DragonFly-4.3 4.3
+ .ds doc-operating-system-DragonFly-4.5 4.5
++.ds doc-operating-system-DragonFly-4.7 4.7
+ .
+ .\" FreeBSD releases not found in doc-common.
+ .ds doc-operating-system-FreeBSD-7.2  7.2
+diff --git a/sys/conf/newvers.sh b/sys/conf/newvers.sh
+index ad9d83b..0a9b980 100644
+--- a/sys/conf/newvers.sh
++++ b/sys/conf/newvers.sh
+@@ -39,7 +39,7 @@ fi
+ 
+ # Set the branch
+ #
+-BRANCH="DEVELOPMENT_4_5"
++BRANCH="DEVELOPMENT_4_7"
+ 
+ TYPE="DragonFly"
+ 
+diff --git a/sys/sys/param.h b/sys/sys/param.h
+index 4b59fc7..d047e00 100644
+--- a/sys/sys/param.h
++++ b/sys/sys/param.h
+@@ -133,9 +133,11 @@
+  * 400501 - unionfs removal
+  * 400502 - private libraries: ssh ldns edit ncurses
+  * 400503 - libarchive-3.0.2 import (add bsdcat)
++ * 400400 - 4.6 release
++ * 400500 - 4.7 development
+  */
+ #undef __DragonFly_version
+-#define __DragonFly_version 400503	/* propagated to newvers */
++#define __DragonFly_version 400700	/* propagated to newvers */
+ 
+ #include <sys/_null.h>
+ 
+-- 
+2.7.2
+

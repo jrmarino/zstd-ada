@@ -1,0 +1,33 @@
+From 593c19b7f83e4325f510b94a7b079d80b7a2cb20 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Wed, 20 Jul 2016 22:21:49 +0200
+Subject: [PATCH 019/100] drm/linux: Add bitmap_weight()
+
+Obtained-from: FreeBSD
+---
+ sys/dev/drm/include/linux/bitmap.h | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/sys/dev/drm/include/linux/bitmap.h b/sys/dev/drm/include/linux/bitmap.h
+index 4f0482f..3bcaa37 100644
+--- a/sys/dev/drm/include/linux/bitmap.h
++++ b/sys/dev/drm/include/linux/bitmap.h
+@@ -41,4 +41,15 @@ bitmap_or(unsigned long *dst, const unsigned long *src1,
+ 	}
+ }
+ 
++static inline int
++bitmap_weight(unsigned long *bitmap, unsigned int nbits)
++{
++	unsigned int bit;
++	unsigned int retval = 0;
++
++	for_each_set_bit(bit, bitmap, nbits)
++		retval++;
++	return (retval);
++}
++
+ #endif	/* _LINUX_BITMAP_H_ */
+-- 
+2.7.2
+

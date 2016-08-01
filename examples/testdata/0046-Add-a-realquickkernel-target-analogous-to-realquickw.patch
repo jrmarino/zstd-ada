@@ -1,0 +1,148 @@
+From 92c9dfecfd83f291011459011fc712da8993aa21 Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Sat, 23 Jul 2016 22:05:49 +0200
+Subject: [PATCH 046/100] Add a realquickkernel target, analogous to
+ realquickworld.
+
+It skips the recently added depend step, so it behaves like
+quickkernel did before 521f740e8971df6fdb1b63933cb534746e86bfae.
+---
+ Makefile               | 12 ++++++++----
+ Makefile.inc1          | 13 +++++++------
+ share/man/man7/build.7 |  9 ++++++---
+ 3 files changed, 21 insertions(+), 13 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 38ba653..e60ee43 100644
+--- a/Makefile
++++ b/Makefile
+@@ -16,9 +16,9 @@
+ #			buildworld.
+ # nativekernel	      - Rebuild the kernel and the kernel-modules from scratch
+ #		        using native tools.
+-# quickkernel	      - rebuild the kernel quickly (build or native), skip
+-#			the make depend step and do not clean out the obj
+-#			modules.
++# quickkernel	      - rebuild the kernel quickly (build or native), and do
++#			not clean out the obj modules.
++# realquickkernel     - Like quickkernel, but skips depend too.
+ # installkernel       - Install the kernel and the kernel-modules.
+ # reinstallkernel     - Reinstall the kernel and the kernel-modules.
+ # kernel              - buildkernel + installkernel.
+@@ -78,7 +78,7 @@
+ # Define the user-driven targets. These are listed here in alphabetical
+ # order, but that's not important.
+ #
+-TGTS=	all all-man buildkernel quickkernel nativekernel \
++TGTS=	all all-man buildkernel quickkernel realquickkernel nativekernel \
+ 	buildworld crossworld quickworld realquickworld checkdpadd clean \
+ 	cleandepend cleandir depend everything \
+ 	hierarchy install installcheck installkernel \
+@@ -97,14 +97,18 @@ BITGTS:=${BITGTS} ${BITGTS:S/^/build/} ${BITGTS:S/^/install/}
+ .ORDER: buildworld buildkernel
+ .ORDER: buildworld nativekernel
+ .ORDER: buildworld quickkernel
++.ORDER: buildworld realquickkernel
+ .ORDER: buildkernel installkernel
+ .ORDER: buildkernel reinstallkernel
+ .ORDER: quickworld installworld
+ .ORDER: quickworld buildkernel
+ .ORDER: quickworld nativekernel
+ .ORDER: quickworld quickkernel
++.ORDER: quickworld realquickkernel
+ .ORDER: quickkernel installkernel
+ .ORDER: quickkernel reinstallkernel
++.ORDER: realquickkernel installkernel
++.ORDER: realquickkernel reinstallkernel
+ 
+ PATH=	/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin:/usr/pkg/bin
+ MAKE=	PATH=${PATH} make -m ${.CURDIR}/share/mk -f Makefile.inc1
+diff --git a/Makefile.inc1 b/Makefile.inc1
+index e866e79..354273b 100644
+--- a/Makefile.inc1
++++ b/Makefile.inc1
+@@ -564,7 +564,7 @@ reinstall:
+ 	cd ${.CURDIR}; make -f Makefile.inc1 install
+ 
+ #
+-# buildkernel, nativekernel, quickkernel, and installkernel
++# buildkernel, nativekernel, quickkernel, realquickkernel, and installkernel
+ #
+ # Which kernels to build and/or install is specified by setting
+ # KERNCONF. If not defined an X86_64_GENERIC kernel is built/installed.
+@@ -637,7 +637,7 @@ maybe_bk_tools:
+ 	@if [ ! -f ${KRNLOBJDIR}/${_kernel}/.nativekernel_run ]; then \
+ 	    if [ ! -f ${WORLDDEST}/.libraries_done ]; then \
+ 		echo "The kernel was build using buildworld tools which no" ; \
+-		echo "longer appear to exist, quickkernel failed!" ; \
++		echo "longer appear to exist, (real)quickkernel failed!" ; \
+ 		/usr/bin/false; \
+ 	    fi; \
+ 	fi
+@@ -740,12 +740,13 @@ nativekernel:	bk_build_list bk_kernwarn
+ 	@echo "--------------------------------------------------------------"
+ .endfor
+ 
+-# The quickkernel target rebuilds the specified kernels as quickly
++# The (real)quickkernel target rebuilds the specified kernels as quickly
+ # as possible.  It will use the native tools or the buildworld cross tools
+ # based on whether the kernel was originally generated via buildkernel or
+ # nativekernel.  Config is rerun but the object hierarchy is not rebuilt.
++# realquickkernel skips the depend step (analogous to realquickworld).
+ #
+-quickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
++quickkernel realquickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
+ .for _kernel in ${BUILDKERNELS}
+ 	@echo "--------------------------------------------------------------"
+ 	@echo ">>> Kernel build for ${_kernel} started on `LC_ALL=C date`"
+@@ -758,7 +759,7 @@ quickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
+ 		    config ${CONFIGARGS} -d ${KRNLOBJDIR}/${_kernel} \
+ 			${KERNCONFDIR}/${_kernel}
+ .endif
+-.if !defined(NO_KERNELDEPEND)
++.if !defined(NO_KERNELDEPEND) && !target(realquickkernel)
+ 	cd ${KRNLOBJDIR}/${_kernel}; \
+ 	    ${KMAKEENV} make KERNEL=${INSTKERNNAME} depend
+ .endif
+@@ -770,7 +771,7 @@ quickkernel:	maybe_bk_tools bk_build_list bk_kernwarn
+ 	    config ${CONFIGARGS} -d ${KRNLOBJDIR}/${_kernel} \
+ 		${KERNCONFDIR}/${_kernel}
+ .endif
+-.if !defined(NO_KERNELDEPEND)
++.if !defined(NO_KERNELDEPEND) && !target(realquickkernel)
+ 	cd ${KRNLOBJDIR}/${_kernel}; \
+ 	    make KERNEL=${INSTKERNNAME} depend
+ .endif
+diff --git a/share/man/man7/build.7 b/share/man/man7/build.7
+index cfbb788..96dd728 100644
+--- a/share/man/man7/build.7
++++ b/share/man/man7/build.7
+@@ -24,7 +24,7 @@
+ .\"
+ .\" $FreeBSD: src/share/man/man7/build.7,v 1.19.2.1 2002/03/18 08:33:02 murray Exp $
+ .\"
+-.Dd July 22, 2016
++.Dd July 23, 2016
+ .Dt BUILD 7
+ .Os
+ .Sh NAME
+@@ -126,11 +126,14 @@ Rebuild the kernel and the kernel-modules using native tools.
+ .It Cm quickkernel
+ Same as
+ .Cm buildkernel ,
+-but skip the depend step and do not clean out the
+-obj modules.
++but do not clean out the obj modules.
+ This target can be used for incremental upgrades once a full
+ build of the kernel has been done with
+ .Cm buildkernel .
++.It Cm realquickkernel
++Same as
++.Cm quickkernel ,
++but also skip the depend step.
+ .It Cm installkernel
+ Install the kernel and the kernel-modules.
+ .It Cm reinstallkernel
+-- 
+2.7.2
+

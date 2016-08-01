@@ -1,0 +1,56 @@
+From 4c33b4aafba21cde86411a5547dce65f5866379a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Wed, 20 Jul 2016 22:07:41 +0200
+Subject: [PATCH 018/100] drm/linux: Add a few ida definitions
+
+Obtained-from: FreeBSD
+---
+ sys/dev/drm/include/linux/idr.h | 29 ++++++++++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/sys/dev/drm/include/linux/idr.h b/sys/dev/drm/include/linux/idr.h
+index 53b3063..ab54d6e 100644
+--- a/sys/dev/drm/include/linux/idr.h
++++ b/sys/dev/drm/include/linux/idr.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2013 François Tigeot
++ * Copyright (c) 2013-2016 François Tigeot
+  * All rights reserved.
+  *
+  * Redistribution and use in source and binary forms, with or without
+@@ -29,4 +29,31 @@
+ 
+ #include <sys/idr.h>
+ 
++#define	IDA_CHUNK_SIZE		128	/* 128 bytes per chunk */
++#define	IDA_BITMAP_LONGS	(IDA_CHUNK_SIZE / sizeof(long) - 1)
++#define	IDA_BITMAP_BITS 	(IDA_BITMAP_LONGS * sizeof(long) * 8)
++
++struct ida_bitmap {
++	long			nr_busy;
++	unsigned long		bitmap[IDA_BITMAP_LONGS];
++};
++
++struct ida {
++	struct idr		idr;
++	struct ida_bitmap	*free_bitmap;
++};
++
++static inline void
++ida_init(struct ida *ida)
++{
++	idr_init(&ida->idr);
++}
++
++static inline void
++ida_destroy(struct ida *ida)
++{
++	idr_destroy(&ida->idr);
++	kfree(ida->free_bitmap);
++}
++
+ #endif	/* _LINUX_IDR_H_ */
+-- 
+2.7.2
+

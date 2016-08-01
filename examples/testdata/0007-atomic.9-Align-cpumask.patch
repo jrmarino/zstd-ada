@@ -1,0 +1,25 @@
+From 7cecd65a2de4ba3604812cfc48d8b3681986b3e6 Mon Sep 17 00:00:00 2001
+From: zrj <rimvydas.jasinskas@gmail.com>
+Date: Mon, 18 Jul 2016 15:10:50 +0300
+Subject: [PATCH 007/100] atomic.9: Align cpumask.
+
+---
+ share/man/man9/atomic.9 | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/share/man/man9/atomic.9 b/share/man/man9/atomic.9
+index 70b1358..f267ad6 100644
+--- a/share/man/man9/atomic.9
++++ b/share/man/man9/atomic.9
+@@ -73,7 +73,7 @@ Each atomic operation operates on a specific
+ The type to use is indicated in the function name.
+ The available types that can be used are:
+ .Pp
+-.Bl -tag -offset indent -width short -compact
++.Bl -tag -offset indent -width ".Li cpumask" -compact
+ .It Li cpumask
+ CPU mask (cpumask_t)
+ .It Li int
+-- 
+2.7.2
+

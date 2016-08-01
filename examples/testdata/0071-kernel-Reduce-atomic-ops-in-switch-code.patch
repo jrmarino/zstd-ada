@@ -1,0 +1,170 @@
+From ee89e80ba8c2a7ec5abadda658ca674775f61949 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Tue, 26 Jul 2016 12:56:31 -0700
+Subject: [PATCH 071/100] kernel - Reduce atomic ops in switch code
+
+* Instead of using four atomic 'and' ops and four atomic 'or' ops, use
+  one atomic 'and' and one atomic 'or' when adjusting the pmap->pm_active.
+
+* Store the array index and simplified cpu mask in the globaldata structure
+  for the above operation.
+---
+ sys/kern/init_main.c                |  2 ++
+ sys/kern/lwkt_thread.c              |  1 +
+ sys/platform/pc64/x86_64/genassym.c |  4 ++++
+ sys/platform/pc64/x86_64/global.s   |  4 ++++
+ sys/platform/pc64/x86_64/swtch.s    | 36 ++++++++++++------------------------
+ sys/sys/globaldata.h                |  4 +++-
+ 6 files changed, 26 insertions(+), 25 deletions(-)
+
+diff --git a/sys/kern/init_main.c b/sys/kern/init_main.c
+index 56cf20d..79f7411 100644
+--- a/sys/kern/init_main.c
++++ b/sys/kern/init_main.c
+@@ -755,6 +755,8 @@ mi_gdinit(struct globaldata *gd, int cpuid)
+ 	gd->gd_sysid_alloc = cpuid;	/* prime low bits for cpu lookup */
+ 	gd->gd_cpuid = cpuid;
+ 	CPUMASK_ASSBIT(gd->gd_cpumask, cpuid);
++	gd->gd_cpumask_simple = CPUMASK_SIMPLE(cpuid);
++	gd->gd_cpumask_offset = (uintptr_t)CPUMASK_ADDR(*(cpumask_t *)0, cpuid);
+ 	lwkt_gdinit(gd);
+ 	vm_map_entry_reserve_cpu_init(gd);
+ 	sleep_gdinit(gd);
+diff --git a/sys/kern/lwkt_thread.c b/sys/kern/lwkt_thread.c
+index 57388b5..c545d4b 100644
+--- a/sys/kern/lwkt_thread.c
++++ b/sys/kern/lwkt_thread.c
+@@ -916,6 +916,7 @@ lwkt_preempt(thread_t ntd, int critcount)
+ 	++preempt_miss;
+ 	return;
+     }
++
+     /*
+      * We don't have to check spinlocks here as they will also bump
+      * td_critcount.
+diff --git a/sys/platform/pc64/x86_64/genassym.c b/sys/platform/pc64/x86_64/genassym.c
+index aab5921..3ae63c8 100644
+--- a/sys/platform/pc64/x86_64/genassym.c
++++ b/sys/platform/pc64/x86_64/genassym.c
+@@ -111,6 +111,8 @@ ASSYM(GD_CPUMASK, offsetof(struct mdglobaldata, mi.gd_cpumask));
+ ASSYM(GD_NPOLL, offsetof(struct mdglobaldata, mi.gd_npoll));
+ ASSYM(GD_SAMPLE_PC, offsetof(struct mdglobaldata, mi.gd_sample_pc));
+ ASSYM(GD_SAMPLE_SP, offsetof(struct mdglobaldata, mi.gd_sample_sp));
++ASSYM(GD_CPUMASK_SIMPLE, offsetof(struct mdglobaldata, mi.gd_cpumask_simple));
++ASSYM(GD_CPUMASK_OFFSET, offsetof(struct mdglobaldata, mi.gd_cpumask_offset));
+ 
+ ASSYM(PCB_CR3, offsetof(struct pcb, pcb_cr3));
+ ASSYM(PCB_R15, offsetof(struct pcb, pcb_r15));
+@@ -185,11 +187,13 @@ ASSYM(TD_WCHAN, offsetof(struct thread, td_wchan));
+ ASSYM(TD_NEST_COUNT, offsetof(struct thread, td_nest_count));
+ ASSYM(TD_FLAGS, offsetof(struct thread, td_flags));
+ ASSYM(TD_TYPE, offsetof(struct thread, td_type));
++ASSYM(TD_PREEMPTED, offsetof(struct thread, td_preempted));
+ 
+ ASSYM(TD_SAVEFPU, offsetof(struct thread, td_savefpu));
+ ASSYM(TDF_RUNNING, TDF_RUNNING);
+ ASSYM(TDF_USINGFP, TDF_USINGFP);
+ ASSYM(TDF_KERNELFP, TDF_KERNELFP);
++ASSYM(TDF_PREEMPT_DONE, TDF_PREEMPT_DONE);
+ 
+ ASSYM(FIRST_SOFTINT, FIRST_SOFTINT);
+ ASSYM(MDGLOBALDATA_BASEALLOC_PAGES, MDGLOBALDATA_BASEALLOC_PAGES);
+diff --git a/sys/platform/pc64/x86_64/global.s b/sys/platform/pc64/x86_64/global.s
+index 6d427c2..1b2b9f1 100644
+--- a/sys/platform/pc64/x86_64/global.s
++++ b/sys/platform/pc64/x86_64/global.s
+@@ -79,6 +79,8 @@
+ 	.globl	gd_sample_pc
+ 	.globl	gd_sample_sp
+ 	.globl	gd_npoll
++	.globl	gd_cpumask_simple
++	.globl	gd_cpumask_offset
+ 
+ 	.set    gd_cpuid,globaldata + GD_CPUID
+ 	.set    gd_cpumask,globaldata + GD_CPUMASK
+@@ -95,4 +97,6 @@
+ 	.set	gd_sample_pc,globaldata + GD_SAMPLE_PC
+ 	.set	gd_sample_sp,globaldata + GD_SAMPLE_SP
+ 	.set	gd_npoll,globaldata + GD_NPOLL
++	.set	gd_cpumask_simple,globaldata + GD_CPUMASK_SIMPLE
++	.set	gd_cpumask_offset,globaldata + GD_CPUMASK_OFFSET
+ 
+diff --git a/sys/platform/pc64/x86_64/swtch.s b/sys/platform/pc64/x86_64/swtch.s
+index 9aa9abe..b2a122f 100644
+--- a/sys/platform/pc64/x86_64/swtch.s
++++ b/sys/platform/pc64/x86_64/swtch.s
+@@ -146,14 +146,10 @@ ENTRY(cpu_heavy_switch)
+ #error "assembly incompatible with cpumask_t"
+ #endif
+ 1:
+-	movq	PCPU(other_cpus)+0,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+0(%rcx)
+-	movq	PCPU(other_cpus)+8,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+8(%rcx)
+-	movq	PCPU(other_cpus)+16,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+16(%rcx)
+-	movq	PCPU(other_cpus)+24,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+24(%rcx)
++	movq	PCPU(cpumask_simple),%rsi
++	movq	PCPU(cpumask_offset),%r12
++	xorq	$-1,%rsi
++	MPLOCKED andq %rsi, VM_PMAP+PM_ACTIVE(%rcx, %r12, 1)
+ 2:
+ 
+ 	/*
+@@ -258,14 +254,11 @@ ENTRY(cpu_exit_switch)
+ 	testq	%rcx,%rcx
+ 	jz	2f
+ 	movq	LWP_VMSPACE(%rcx), %rcx		/* RCX = vmspace */
+-	movq	PCPU(other_cpus)+0,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+0(%rcx)
+-	movq	PCPU(other_cpus)+8,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+8(%rcx)
+-	movq	PCPU(other_cpus)+16,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+16(%rcx)
+-	movq	PCPU(other_cpus)+24,%rax
+-	MPLOCKED andq	%rax, VM_PMAP+PM_ACTIVE+24(%rcx)
++
++	movq	PCPU(cpumask_simple),%rax
++	movq	PCPU(cpumask_offset),%r12
++	xorq	$-1,%rax
++	MPLOCKED andq %rax, VM_PMAP+PM_ACTIVE(%rcx, %r12, 1)
+ 2:
+ 	/*
+ 	 * Switch to the next thread.  RET into the restore function, which
+@@ -335,14 +328,9 @@ ENTRY(cpu_heavy_restore)
+ #if CPUMASK_ELEMENTS != 4
+ #error "assembly incompatible with cpumask_t"
+ #endif
+-	movq	PCPU(cpumask)+0,%rsi		/* new contents */
+-	MPLOCKED orq %rsi, VM_PMAP+PM_ACTIVE+0(%rcx)
+-	movq	PCPU(cpumask)+8,%rsi
+-	MPLOCKED orq %rsi, VM_PMAP+PM_ACTIVE+8(%rcx)
+-	movq	PCPU(cpumask)+16,%rsi
+-	MPLOCKED orq %rsi, VM_PMAP+PM_ACTIVE+16(%rcx)
+-	movq	PCPU(cpumask)+24,%rsi
+-	MPLOCKED orq %rsi, VM_PMAP+PM_ACTIVE+24(%rcx)
++	movq	PCPU(cpumask_simple),%rsi
++	movq	PCPU(cpumask_offset),%r12
++	MPLOCKED orq %rsi, VM_PMAP+PM_ACTIVE(%rcx, %r12, 1)
+ 
+ 	movl	VM_PMAP+PM_ACTIVE_LOCK(%rcx),%esi
+ 	testl	$CPULOCK_EXCL,%esi
+diff --git a/sys/sys/globaldata.h b/sys/sys/globaldata.h
+index 0752cb7..1a4ef89 100644
+--- a/sys/sys/globaldata.h
++++ b/sys/sys/globaldata.h
+@@ -175,7 +175,9 @@ struct globaldata {
+ 	void		*gd_reserved_pcpu_mmap; /* future */
+ 	uint64_t	gd_forkid;		/* per-cpu unique inc ncpus */
+ 	void		*gd_sample_sp;		/* sample stack pointer */
+-	uint64_t	gd_reserved64[3];
++	uint64_t	gd_cpumask_simple;
++	uint64_t	gd_cpumask_offset;
++	uint64_t	gd_reserved64[1];
+ 	void		*gd_preserved[4];	/* future fields */
+ 	/* extended by <machine/globaldata.h> */
+ };
+-- 
+2.7.2
+

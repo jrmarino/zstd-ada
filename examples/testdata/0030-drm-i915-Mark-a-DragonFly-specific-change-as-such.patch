@@ -1,0 +1,25 @@
+From 8d327fcc6e31be8c51b8f2f883cfe4ed32015b02 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Thu, 21 Jul 2016 12:13:58 +0200
+Subject: [PATCH 030/100] drm/i915: Mark a DragonFly-specific change as such
+
+---
+ sys/dev/drm/i915/intel_dp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sys/dev/drm/i915/intel_dp.c b/sys/dev/drm/i915/intel_dp.c
+index c6c8169..bf98756 100644
+--- a/sys/dev/drm/i915/intel_dp.c
++++ b/sys/dev/drm/i915/intel_dp.c
+@@ -1960,7 +1960,7 @@ void intel_edp_panel_vdd_on(struct intel_dp *intel_dp)
+ 	vdd = edp_panel_vdd_on(intel_dp);
+ 	pps_unlock(intel_dp);
+ 
+-#if 1
++#ifdef __DragonFly__
+ /* XXX: limit dmesg spam to 16 warnings instead of 137, where is the bug? */
+ 	if(!vdd)
+ 		DRM_ERROR_RATELIMITED("eDP port %c VDD already requested on\n",
+-- 
+2.7.2
+

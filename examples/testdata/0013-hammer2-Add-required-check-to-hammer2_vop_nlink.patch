@@ -1,0 +1,35 @@
+From 01693c34ec9e175a7a9dd3e3576d93e4d3ee36c7 Mon Sep 17 00:00:00 2001
+From: Matthew Dillon <dillon@apollo.backplane.com>
+Date: Tue, 19 Jul 2016 17:12:45 -0700
+Subject: [PATCH 013/100] hammer2: Add required check to hammer2_vop_nlink()
+
+* Add required mount compatibility check to hammer2_vop_nlink().
+---
+ sys/vfs/hammer2/hammer2_vnops.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/sys/vfs/hammer2/hammer2_vnops.c b/sys/vfs/hammer2/hammer2_vnops.c
+index 1806bd9..ab72706 100644
+--- a/sys/vfs/hammer2/hammer2_vnops.c
++++ b/sys/vfs/hammer2/hammer2_vnops.c
+@@ -1378,6 +1378,9 @@ hammer2_vop_nlink(struct vop_nlink_args *ap)
+ 	size_t name_len;
+ 	int error;
+ 
++	if (ap->a_dvp->v_mount != ap->a_vp->v_mount)
++		return(EXDEV);
++
+ 	LOCKSTART;
+ 	tdip = VTOI(ap->a_dvp);
+ 	if (tdip->pmp->ronly) {
+@@ -1401,6 +1404,7 @@ hammer2_vop_nlink(struct vop_nlink_args *ap)
+ 	 * is locked.
+ 	 */
+ 	ip = VTOI(ap->a_vp);
++	KASSERT(ip->pmp, ("ip->pmp is NULL %p %p", ip, ip->pmp));
+ 	hammer2_pfs_memory_wait(ip->pmp);
+ 	hammer2_trans_init(ip->pmp, 0);
+ 
+-- 
+2.7.2
+

@@ -1,0 +1,51 @@
+From 3dda54c60cbb0c8677ed2e76c97a5e0c9ac90e38 Mon Sep 17 00:00:00 2001
+From: Sascha Wildner <saw@online.de>
+Date: Mon, 25 Jul 2016 00:45:46 +0200
+Subject: [PATCH 058/100] sysconf.3: Document _SC_PAGE_SIZE and _SC_PHYS_PAGES.
+
+Taken-from:    FreeBSD
+Submitted-by:  Sevan Janiyan
+Dragonfly-bug: <https://bugs.dragonflybsd.org/issues/2929>
+---
+ lib/libc/gen/sysconf.3 | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/lib/libc/gen/sysconf.3 b/lib/libc/gen/sysconf.3
+index cde5404..21a5fcd 100644
+--- a/lib/libc/gen/sysconf.3
++++ b/lib/libc/gen/sysconf.3
+@@ -28,7 +28,7 @@
+ .\"	@(#)sysconf.3	8.3 (Berkeley) 4/19/94
+ .\" $FreeBSD: src/lib/libc/gen/sysconf.3,v 1.8.2.6 2001/12/14 18:33:51 ru Exp $
+ .\"
+-.Dd October 26, 2015
++.Dd July 25, 2016
+ .Dt SYSCONF 3
+ .Os
+ .Sh NAME
+@@ -117,6 +117,9 @@ The number of processors online.
+ The maximum number of open files per user id.
+ .It Dv _SC_PAGESIZE
+ The size of a system page in bytes.
++.It Dv _SC_PAGE_SIZE
++Equivalent to
++.Dv _SC_PAGESIZE.
+ .It Dv _SC_RE_DUP_MAX
+ The maximum number of repeated occurrences of a regular expression
+ permitted when using interval notation.
+@@ -176,6 +179,12 @@ The version of
+ .St -p1003.2
+ with which the system attempts to comply.
+ .El
++.Pp
++These values also exist, but may not be standard:
++.Bl -tag -width 6n
++.It Dv _SC_PHYS_PAGES
++The number of pages of physical memory.
++.El
+ .Sh RETURN VALUES
+ If the call to
+ .Fn sysconf
+-- 
+2.7.2
+
