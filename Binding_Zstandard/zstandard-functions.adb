@@ -341,21 +341,28 @@ package body Zstandard.Functions is
       quality     : Compression_Level := Fastest_Compression) return Compression_Dictionary
    is
       sample_file_size : Natural;
+      new_dictionary   : Compression_Dictionary;
    begin
+      successful := False;
       if not DIR.Exists (sample_file) then
-         successful := False;
          return Thin.Null_CDict_pointer;
       end if;
 
       sample_file_size := Natural (DIR.Size (sample_file));
 
       declare
+         use type Thin.ZSTD_CDict_ptr;
          good_dump : Boolean;
          payload : constant String := File_Contents (filename => sample_file,
                                                      filesize => sample_file_size,
                                                      nominal  => good_dump);
       begin
-         return Create_Compression_Dictionary (payload, quality);
+         if not good_dump then
+            return Thin.Null_CDict_pointer;
+         end if;
+         new_dictionary := Create_Compression_Dictionary (payload, quality);
+         successful := (new_dictionary /= Thin.Null_CDict_pointer);
+         return new_dictionary;
       end;
    end Create_Compression_Dictionary_From_File;
 
@@ -392,21 +399,28 @@ package body Zstandard.Functions is
                                                        return Decompression_Dictionary
    is
       sample_file_size : Natural;
+      new_dictionary   : Decompression_Dictionary;
    begin
+      successful := False;
       if not DIR.Exists (sample_file) then
-         successful := False;
          return Thin.Null_DDict_pointer;
       end if;
 
       sample_file_size := Natural (DIR.Size (sample_file));
 
       declare
+         use type Thin.ZSTD_DDict_ptr;
          good_dump : Boolean;
          payload : constant String := File_Contents (filename => sample_file,
                                                      filesize => sample_file_size,
                                                      nominal  => good_dump);
       begin
-         return Create_Decompression_Dictionary (payload);
+         if not good_dump then
+            return Thin.Null_DDict_pointer;
+         end if;
+         new_dictionary := Create_Decompression_Dictionary (payload);
+         successful := (new_dictionary /= Thin.Null_DDict_pointer);
+         return new_dictionary;
       end;
    end Create_Decompression_Dictionary_From_File;
 
