@@ -249,7 +249,7 @@ package body Zstandard.Functions is
                                                    quality     => quality);
          begin
             if not good_compress then
-               return Warn_compress_fail;
+               return Warn_compress_fail & " (" & compact & ")";
             end if;
 
             if Write_Entire_File (filename => output_file, contents => compact) then
@@ -299,7 +299,7 @@ package body Zstandard.Functions is
                                                       successful  => good_expansion);
          begin
             if not good_expansion then
-               return Warn_decompress_fail;
+               return Warn_decompress_fail & " (" & fulldata & ")";
             end if;
 
             if Write_Entire_File (filename => output_file, contents => fulldata) then
@@ -513,7 +513,7 @@ package body Zstandard.Functions is
                                                    successful  => good_compress);
          begin
             if not good_compress then
-               return Warn_compress_fail;
+               return Warn_compress_fail & " (" & compact & ")";
             end if;
 
             if Write_Entire_File (filename => output_file, contents => compact) then
@@ -550,13 +550,12 @@ package body Zstandard.Functions is
       dctx        : Thin.ZSTD_DCtx_ptr;
       freeres     : Thin.IC.size_t;
    begin
+      successful := False;
       if full_size = 0 then
-         successful := False;
          return Warn_orig_size_fail;
       end if;
 
       if full_size > Thin.Zstd_uint64 (Thin.IC.size_t'Last) then
-         successful := False;
          return Warn_way_too_big;
       end if;
 
@@ -620,7 +619,7 @@ package body Zstandard.Functions is
                                                       successful  => good_expansion);
          begin
             if not good_expansion then
-               return Warn_decompress_fail;
+               return Warn_decompress_fail & " (" & fulldata & ")";
             end if;
 
             if Write_Entire_File (filename => output_file, contents => fulldata) then
