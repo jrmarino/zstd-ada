@@ -129,12 +129,12 @@ package body Zstandard.Functions is
    begin
       if full_size = 0 then
          successful := False;
-         return "ERROR: Original size unknown";
+         return Warn_orig_size_fail;
       end if;
 
       if full_size > Thin.Zstd_uint64 (Thin.IC.size_t'Last) then
          successful := False;
-         return "ERROR: Hit 4Gb limit imposed by this architecture";
+         return Warn_way_too_big;
       end if;
 
       declare
@@ -157,9 +157,9 @@ package body Zstandard.Functions is
 
 
    ---------------------
-   --  file_contents  --
+   --  File_Contents  --
    ---------------------
-   function file_contents (filename : String;
+   function File_Contents (filename : String;
                            filesize : Natural;
                            nominal  : out Boolean) return String
    is
@@ -183,13 +183,13 @@ package body Zstandard.Functions is
             File_String_IO.Close (File);
          end if;
          return "";
-   end file_contents;
+   end File_Contents;
 
 
    -------------------------
    --  write_entire_file  --
    -------------------------
-   function write_entire_file (filename : String; contents : String) return Boolean
+   function Write_Entire_File (filename : String; contents : String) return Boolean
    is
       new_file_size : constant Natural := contents'Length;
 
@@ -209,7 +209,7 @@ package body Zstandard.Functions is
             File_String_IO.Close (output_Handle);
          end if;
          return False;
-   end write_entire_file;
+   end Write_Entire_File;
 
 
    ---------------------
@@ -227,19 +227,19 @@ package body Zstandard.Functions is
       output_size := 0;
       successful  := False;
       if not DIR.Exists (source_file) then
-         return "ERROR: Source file does not exist";
+         return Warn_src_file_DNE;
       end if;
 
       source_size := File_Size (DIR.Size (source_file));
 
       declare
          good_dump : Boolean;
-         payload : constant String := file_contents (filename => source_file,
+         payload : constant String := File_Contents (filename => source_file,
                                                      filesize => Natural (source_size),
                                                      nominal  => good_dump);
       begin
          if not good_dump then
-            return "ERROR: Failed to read source file";
+            return Warn_src_read_fail;
          end if;
 
          declare
@@ -249,15 +249,15 @@ package body Zstandard.Functions is
                                                    quality     => quality);
          begin
             if not good_compress then
-               return "ERROR: Failed to compress data after reading source file";
+               return Warn_compress_fail;
             end if;
 
-            if write_entire_file (filename => output_file, contents => compact) then
+            if Write_Entire_File (filename => output_file, contents => compact) then
                output_size := File_Size (compact'Length);
                successful := True;
                return "";
             else
-               return "ERROR: Failed to write to open output file";
+               return Warn_dst_write_fail;
             end if;
          end;
       end;
@@ -272,26 +272,25 @@ package body Zstandard.Functions is
       output_file : String;
       source_size : out File_Size;
       output_size : out File_Size;
-      successful  : out Boolean) return String
-   is
+      successful  : out Boolean) return String is
    begin
       source_size := 0;
       output_size := 0;
       successful  := False;
       if not DIR.Exists (source_file) then
-         return "ERROR: Source file does not exist";
+         return Warn_src_file_DNE;
       end if;
 
       source_size := File_Size (DIR.Size (source_file));
 
       declare
          good_dump : Boolean;
-         payload : constant String := file_contents (filename => source_file,
+         payload : constant String := File_Contents (filename => source_file,
                                                      filesize => Natural (source_size),
                                                      nominal  => good_dump);
       begin
          if not good_dump then
-            return "ERROR: Failed to read source file";
+            return Warn_src_read_fail;
          end if;
 
          declare
@@ -300,15 +299,322 @@ package body Zstandard.Functions is
                                                       successful  => good_expansion);
          begin
             if not good_expansion then
-               return "ERROR: Failed to decompress data after reading source file";
+               return Warn_decompress_fail;
             end if;
 
-            if write_entire_file (filename => output_file, contents => fulldata) then
+            if Write_Entire_File (filename => output_file, contents => fulldata) then
                output_size := File_Size (fulldata'Length);
                successful := True;
                return "";
             else
-               return "ERROR: Failed to write to open output file";
+               return Warn_dst_write_fail;
+            end if;
+         end;
+      end;
+   end Decompress_File;
+
+
+   -------------------------------------
+   --  Create_Compression_Dictionary  --
+   -------------------------------------
+   function Create_Compression_Dictionary
+     (sample  : String;
+      quality : Compression_Level := Fastest_Compression) return Compression_Dictionary
+   is
+      dict         : aliased Thin.IC.char_array := convert (sample);
+      dictSize     : constant Thin.IC.size_t := Thin.IC.size_t (sample'Length);
+      dict_pointer : Thin.ICS.chars_ptr := Thin.ICS.To_Chars_Ptr (dict'Unchecked_Access);
+      level        : constant Thin.IC.int := Thin.IC.int (quality);
+   begin
+      return Thin.ZSTD_createCDict (dict             => dict_pointer,
+                                    dictSize         => dictSize,
+                                    compressionLevel => level);
+   end Create_Compression_Dictionary;
+
+
+   -----------------------------------------------
+   --  Create_Compression_Dictionary_From_File  --
+   -----------------------------------------------
+   function Create_Compression_Dictionary_From_File
+     (sample_file : String;
+      successful  : out Boolean;
+      quality     : Compression_Level := Fastest_Compression) return Compression_Dictionary
+   is
+      sample_file_size : Natural;
+   begin
+      if not DIR.Exists (sample_file) then
+         successful := False;
+         return Thin.Null_CDict_pointer;
+      end if;
+
+      sample_file_size := Natural (DIR.Size (sample_file));
+
+      declare
+         good_dump : Boolean;
+         payload : constant String := File_Contents (filename => sample_file,
+                                                     filesize => sample_file_size,
+                                                     nominal  => good_dump);
+      begin
+         return Create_Compression_Dictionary (payload, quality);
+      end;
+   end Create_Compression_Dictionary_From_File;
+
+
+   --------------------------------------
+   --  Destroy_Compression_Dictionary  --
+   --------------------------------------
+   procedure Destroy_Compression_Dictionary (digest : Compression_Dictionary)
+   is
+      res : Thin.IC.size_t;
+   begin
+      res := Thin.ZSTD_freeCDict (CDict => digest);
+   end Destroy_Compression_Dictionary;
+
+
+   ---------------------------------------
+   --  Create_Decompression_Dictionary  --
+   ---------------------------------------
+   function Create_Decompression_Dictionary (sample : String) return Decompression_Dictionary
+   is
+      dict         : aliased Thin.IC.char_array := convert (sample);
+      dictSize     : constant Thin.IC.size_t := Thin.IC.size_t (sample'Length);
+      dict_pointer : Thin.ICS.chars_ptr := Thin.ICS.To_Chars_Ptr (dict'Unchecked_Access);
+   begin
+      return Thin.ZSTD_createDDict (dict => dict_pointer, dictSize => dictSize);
+   end Create_Decompression_Dictionary;
+
+
+   -------------------------------------------------
+   --  Create_Decompression_Dictionary_From_File  --
+   -------------------------------------------------
+   function Create_Decompression_Dictionary_From_File (sample_file : String;
+                                                       successful  : out Boolean)
+                                                       return Decompression_Dictionary
+   is
+      sample_file_size : Natural;
+   begin
+      if not DIR.Exists (sample_file) then
+         successful := False;
+         return Thin.Null_DDict_pointer;
+      end if;
+
+      sample_file_size := Natural (DIR.Size (sample_file));
+
+      declare
+         good_dump : Boolean;
+         payload : constant String := File_Contents (filename => sample_file,
+                                                     filesize => sample_file_size,
+                                                     nominal  => good_dump);
+      begin
+         return Create_Decompression_Dictionary (payload);
+      end;
+   end Create_Decompression_Dictionary_From_File;
+
+
+   ----------------------------------------
+   --  Destroy_Decompression_Dictionary  --
+   ----------------------------------------
+   procedure Destroy_Decompression_Dictionary (digest : Decompression_Dictionary)
+   is
+      res : Thin.IC.size_t;
+   begin
+      res := Thin.ZSTD_freeDDict (ddict => digest);
+   end Destroy_Decompression_Dictionary;
+
+
+   -----------------------------
+   --  Compress (dictionary)  --
+   -----------------------------
+   function Compress
+     (source_data : String;
+      digest      : Compression_Dictionary;
+      successful  : out Boolean) return String
+   is
+      comp_bytes  : Thin.IC.size_t;
+      is_error    : Thin.IC.unsigned;
+
+      src         : aliased Thin.IC.char_array := convert (source_data);
+      srcSize     : constant Thin.IC.size_t := Thin.IC.size_t (source_data'Length);
+      dstCapacity : constant Thin.IC.size_t := Thin.ZSTD_compressBound (srcSize);
+      dst         : aliased Thin.IC.char_array := (1 .. dstCapacity => Thin.IC.nul);
+
+      dst_pointer : Thin.ICS.chars_ptr := Thin.ICS.To_Chars_Ptr (dst'Unchecked_Access);
+      src_pointer : Thin.ICS.chars_ptr := Thin.ICS.To_Chars_Ptr (src'Unchecked_Access);
+
+      cctx        : Thin.ZSTD_CCtx_ptr;
+      freeres     : Thin.IC.size_t;
+   begin
+      cctx := Thin.ZSTD_createCCtx;
+      comp_bytes := Thin.ZSTD_compress_usingCDict (ctx         => cctx,
+                                                   dst         => dst_pointer,
+                                                   dstCapacity => dstCapacity,
+                                                   src         => src_pointer,
+                                                   srcSize     => srcSize,
+                                                   CDict       => digest);
+      freeres := Thin.ZSTD_freeCCtx (cctx);
+      is_error := Thin.ZSTD_isError (code => comp_bytes);
+      successful := (Natural (is_error) = 0);
+      if successful then
+         return convert (dst (1 .. comp_bytes));
+      else
+         return Thin.ICS.Value (Thin.ZSTD_getErrorName (code => comp_bytes));
+      end if;
+   end Compress;
+
+
+   ----------------------------------
+   --  Compress_File (dictionary)  --
+   ----------------------------------
+   function Compress_File
+     (source_file : String;
+      output_file : String;
+      digest      : Compression_Dictionary;
+      source_size : out File_Size;
+      output_size : out File_Size;
+      successful  : out Boolean) return String is
+   begin
+      source_size := 0;
+      output_size := 0;
+      successful  := False;
+      if not DIR.Exists (source_file) then
+         return Warn_src_file_DNE;
+      end if;
+
+      source_size := File_Size (DIR.Size (source_file));
+
+      declare
+         good_dump : Boolean;
+         payload : constant String := File_Contents (filename => source_file,
+                                                     filesize => Natural (source_size),
+                                                     nominal  => good_dump);
+      begin
+         if not good_dump then
+            return Warn_src_read_fail;
+         end if;
+
+         declare
+            good_compress : Boolean;
+            compact : constant String := Compress (source_data => payload,
+                                                   digest      => digest,
+                                                   successful  => good_compress);
+         begin
+            if not good_compress then
+               return Warn_compress_fail;
+            end if;
+
+            if Write_Entire_File (filename => output_file, contents => compact) then
+               output_size := File_Size (compact'Length);
+               successful := True;
+               return "";
+            else
+               return Warn_dst_write_fail;
+            end if;
+         end;
+      end;
+   end Compress_File;
+
+
+   -------------------------------
+   --  Decompress (dictionary)  --
+   -------------------------------
+   function Decompress
+     (source_data : String;
+      digest      : Decompression_Dictionary;
+      successful  : out Boolean) return String
+   is
+      use type Thin.Zstd_uint64;
+      use type Thin.IC.size_t;
+
+      dcmp_bytes  : Thin.IC.size_t;
+
+      src         : aliased Thin.IC.char_array := convert (source_data);
+      srcSize     : constant Thin.IC.size_t := Thin.IC.size_t (source_data'Length);
+      src_pointer : Thin.ICS.chars_ptr := Thin.ICS.To_Chars_Ptr (src'Unchecked_Access);
+      full_size   : constant Thin.Zstd_uint64 :=
+                    Thin.ZSTD_getDecompressedSize (src     => src_pointer,
+                                                   srcSize => srcSize);
+      dctx        : Thin.ZSTD_DCtx_ptr;
+      freeres     : Thin.IC.size_t;
+   begin
+      if full_size = 0 then
+         successful := False;
+         return Warn_orig_size_fail;
+      end if;
+
+      if full_size > Thin.Zstd_uint64 (Thin.IC.size_t'Last) then
+         successful := False;
+         return Warn_way_too_big;
+      end if;
+
+      declare
+         dstCapacity : constant Thin.IC.size_t := Thin.IC.size_t (full_size);
+         dst         : aliased Thin.IC.char_array := (1 .. dstCapacity => Thin.IC.nul);
+         dst_pointer : Thin.ICS.chars_ptr := Thin.ICS.To_Chars_Ptr (dst'Unchecked_Access);
+      begin
+         dctx := Thin.ZSTD_createDCtx;
+         dcmp_bytes := Thin.ZSTD_decompress_usingDDict (dctx        => dctx,
+                                                        dst         => dst_pointer,
+                                                        dstCapacity => dstCapacity,
+                                                        src         => src_pointer,
+                                                        srcSize     => srcSize,
+                                                        ddict       => digest);
+         freeres := Thin.ZSTD_freeDCtx (dctx);
+         successful := (dcmp_bytes = dstCapacity);
+         if successful then
+            return convert (dst);
+         else
+            return Thin.ICS.Value (Thin.ZSTD_getErrorName (code => dcmp_bytes));
+         end if;
+      end;
+   end Decompress;
+
+
+   ------------------------------------
+   --  Decompress_File (dictionary)  --
+   ------------------------------------
+   function Decompress_File
+     (source_file : String;
+      output_file : String;
+      digest      : Decompression_Dictionary;
+      source_size : out File_Size;
+      output_size : out File_Size;
+      successful  : out Boolean) return String is
+   begin
+      source_size := 0;
+      output_size := 0;
+      successful  := False;
+      if not DIR.Exists (source_file) then
+         return Warn_src_file_DNE;
+      end if;
+
+      source_size := File_Size (DIR.Size (source_file));
+
+      declare
+         good_dump : Boolean;
+         payload : constant String := File_Contents (filename => source_file,
+                                                     filesize => Natural (source_size),
+                                                     nominal  => good_dump);
+      begin
+         if not good_dump then
+            return Warn_src_read_fail;
+         end if;
+
+         declare
+            good_expansion : Boolean;
+            fulldata : constant String := Decompress (source_data => payload,
+                                                      digest      => digest,
+                                                      successful  => good_expansion);
+         begin
+            if not good_expansion then
+               return Warn_decompress_fail;
+            end if;
+
+            if Write_Entire_File (filename => output_file, contents => fulldata) then
+               output_size := File_Size (fulldata'Length);
+               successful := True;
+               return "";
+            else
+               return Warn_dst_write_fail;
             end if;
          end;
       end;

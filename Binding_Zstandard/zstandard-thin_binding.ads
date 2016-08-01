@@ -16,10 +16,17 @@ package Zstandard.Thin_Binding is
    type Zstd_uint64 is mod 2 ** 64;
    type Zstd_uint32 is mod 2 ** 32;
 
-   type ZSTD_CCtx_ptr  is new System.Address;
-   type ZSTD_DCtx_ptr  is new System.Address;
-   type ZSTD_CDict_ptr is new System.Address;
-   type ZSTD_DDict_ptr is new System.Address;
+   subtype ZSTD_CCtx_ptr  is System.Address;
+   subtype ZSTD_DCtx_ptr  is System.Address;
+   subtype ZSTD_CDict_ptr is System.Address;
+   subtype ZSTD_DDict_ptr is System.Address;
+
+   ------------------
+   --  Constants  --
+   ------------------
+
+   Null_CDict_pointer : constant ZSTD_CDict_ptr := System.Null_Address;
+   Null_DDict_pointer : constant ZSTD_DDict_ptr := System.Null_Address;
 
    ---------------
    --  Version  --
