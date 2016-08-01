@@ -186,6 +186,32 @@ package body Zstandard.Functions is
    end file_contents;
 
 
+   -------------------------
+   --  write_entire_file  --
+   -------------------------
+   function write_entire_file (filename : String; contents : String) return Boolean
+   is
+      new_file_size : constant Natural := contents'Length;
+
+      subtype File_String    is String (1 .. new_file_size);
+      package File_String_IO is new Ada.Direct_IO (File_String);
+      output_Handle : File_String_IO.File_Type;
+   begin
+      File_String_IO.Create (File => output_Handle,
+                             Mode => File_String_IO.Out_File,
+                             Name => filename);
+      File_String_IO.Write (output_Handle, File_String (contents));
+      File_String_IO.Close (output_Handle);
+      return True;
+   exception
+      when others =>
+         if File_String_IO.Is_Open (output_Handle) then
+            File_String_IO.Close (output_Handle);
+         end if;
+         return False;
+   end write_entire_file;
+
+
    ---------------------
    --  Compress_File  --
    ---------------------
@@ -221,32 +247,18 @@ package body Zstandard.Functions is
             compact : constant String := Compress (source_data => payload,
                                                    successful  => good_compress,
                                                    quality     => quality);
-            new_file_size : constant Natural := compact'Length;
-
-            subtype File_String    is String (1 .. new_file_size);
-            package File_String_IO is new Ada.Direct_IO (File_String);
-            output_Handle : File_String_IO.File_Type;
          begin
             if not good_compress then
                return "ERROR: Failed to compress data after reading source file";
             end if;
 
-            begin
-               File_String_IO.Create (File => output_Handle,
-                                      Mode => File_String_IO.Out_File,
-                                      Name => output_file);
-               File_String_IO.Write (output_Handle, File_String (compact));
-               File_String_IO.Close (output_Handle);
+            if write_entire_file (filename => output_file, contents => compact) then
                output_size := File_Size (compact'Length);
                successful := True;
                return "";
-            exception
-               when others =>
-                  if File_String_IO.Is_Open (output_Handle) then
-                     File_String_IO.Close (output_Handle);
-                  end if;
-                  return "ERROR: Failed to write to open output file";
-            end;
+            else
+               return "ERROR: Failed to write to open output file";
+            end if;
          end;
       end;
    end Compress_File;

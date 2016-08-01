@@ -84,6 +84,10 @@ package Zstandard.Functions is
                            filesize : Natural;
                            nominal  : out Boolean) return String;
 
+   --  Helper function to create a new file with the exact value of "contents" string
+   --  Potentially useful for writing compressed or plain text from memory
+   function write_entire_file (filename : String; contents : String) return Boolean;
+
 private
 
    function convert (data : Thin.IC.char_array) return String;
