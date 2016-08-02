@@ -79,7 +79,7 @@ package body Zstandard.Functions is
    function Compress
      (source_data : String;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return String
+      quality     : Compression_Level := Default_Compression) return String
    is
       comp_bytes  : Thin.IC.size_t;
       is_error    : Thin.IC.unsigned;
@@ -221,7 +221,7 @@ package body Zstandard.Functions is
       source_size : out File_Size;
       output_size : out File_Size;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return String is
+      quality     : Compression_Level := Default_Compression) return String is
    begin
       source_size := 0;
       output_size := 0;
@@ -319,7 +319,7 @@ package body Zstandard.Functions is
    -------------------------------------
    function Create_Compression_Dictionary
      (sample  : String;
-      quality : Compression_Level := Fastest_Compression) return Compression_Dictionary
+      quality : Compression_Level := Default_Compression) return Compression_Dictionary
    is
       dict         : aliased Thin.IC.char_array := convert (sample);
       dictSize     : constant Thin.IC.size_t := Thin.IC.size_t (sample'Length);
@@ -338,7 +338,7 @@ package body Zstandard.Functions is
    function Create_Compression_Dictionary_From_File
      (sample_file : String;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return Compression_Dictionary
+      quality     : Compression_Level := Default_Compression) return Compression_Dictionary
    is
       sample_file_size : Natural;
       new_dictionary   : Compression_Dictionary;

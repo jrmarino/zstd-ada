@@ -23,6 +23,7 @@ package Zstandard.Functions is
 
    Fastest_Compression : constant Compression_Level := Compression_Level'First;
    Highest_Compression : constant Compression_Level := Compression_Level'Last;
+   Default_Compression : constant Compression_Level := 3;
 
 
    --------------------
@@ -43,7 +44,7 @@ package Zstandard.Functions is
    function Compress
      (source_data : String;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return String;
+      quality     : Compression_Level := Default_Compression) return String;
 
    --  This function creates an output file that is a compressed version of the "source_file".
    --  It returns a blank string if successful and "successful" is set to True.  Should the
@@ -55,7 +56,7 @@ package Zstandard.Functions is
       source_size : out File_Size;
       output_size : out File_Size;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return String;
+      quality     : Compression_Level := Default_Compression) return String;
 
 
    --------------------
@@ -99,14 +100,14 @@ package Zstandard.Functions is
    --  the dictionary is created by giving it a sample of the types to be compressed.
    function Create_Compression_Dictionary
      (sample  : String;
-      quality : Compression_Level := Fastest_Compression) return Compression_Dictionary;
+      quality : Compression_Level := Default_Compression) return Compression_Dictionary;
 
    --  Similar to "Create_Compression_Dictionary" but the sample comes from a file
    --  Normally this is created by "zstd --train" command
    function Create_Compression_Dictionary_From_File
      (sample_file : String;
       successful  : out Boolean;
-      quality     : Compression_Level := Fastest_Compression) return Compression_Dictionary;
+      quality     : Compression_Level := Default_Compression) return Compression_Dictionary;
 
    --  Release the compression dictionary after use.
    procedure Destroy_Compression_Dictionary (digest : Compression_Dictionary);
