@@ -200,4 +200,145 @@ package Zstandard.Thin_Binding is
       src : ICS.chars_ptr; srcSize     : IC.size_t) return IC.size_t;
    pragma Import (C, ZSTD_decompressDCtx, "ZSTD_decompressDCtx");
 
+   ---------------------------
+   --  Streaming Data Types  --
+   ----------------------------
+
+   type ZSTD_CStream_ptr is new System.Address;
+   type ZSTD_DStream_ptr is new System.Address;
+
+   --  *src <start of input buffer>
+   --  size <size of input buffer>
+   --  pos  <position where reading stopped. Will be updated. Necessarily 0 <= pos <= size>
+   type ZSTD_inBuffer_s is record
+      src  : ICS.chars_ptr;
+      size : IC.size_t;
+      pos  : IC.size_t;
+   end record;
+
+   --  *dst <start of output buffer>
+   --  size <size of output buffer>
+   --  pos  <position where reading stopped. Will be updated. Necessarily 0 <= pos <= size>
+   type ZSTD_outBuffer_s is record
+      dst  : ICS.chars_ptr;
+      size : IC.size_t;
+      pos  : IC.size_t;
+   end record;
+
+   type ZSTD_inBuffer_s_Access is access all ZSTD_inBuffer_s;
+   pragma Convention (C, ZSTD_inBuffer_s_Access);
+
+   type ZSTD_outBuffer_s_Access is access all ZSTD_outBuffer_s;
+   pragma Convention (C, ZSTD_outBuffer_s_Access);
+
+   -----------------------------
+   --  Streaming Compression  --
+   -----------------------------
+
+   --  A ZSTD_CStream object is required to track streaming operation.
+   --  Use ZSTD_createCStream() and ZSTD_freeCStream() to create/release resources.
+   --  ZSTD_CStream objects can be reused multiple times on consecutive compression operations.
+
+   function ZSTD_createCStream return ZSTD_CStream_ptr;
+   pragma Import (C, ZSTD_createCStream, "ZSTD_createCStream");
+
+   function ZSTD_freeCStream (zcs : ZSTD_CStream_ptr) return IC.size_t;
+   pragma Import (C, ZSTD_freeCStream, "ZSTD_freeCStream");
+
+   --  Start by initializing ZSTD_CStream.
+   --  Use ZSTD_initCStream() to start a new compression operation.
+
+   function ZSTD_initCStream
+     (zcs : ZSTD_CStream_ptr;
+      compressionLevel : IC.int) return IC.size_t;
+   pragma Import (C, ZSTD_initCStream, "ZSTD_initCStream");
+
+   --  Use ZSTD_compressStream() repetitively to consume input stream.
+   --  The function will automatically update both `pos`.
+   --  Note that it may not consume the entire input, in which case `pos < size`,
+   --  and it's up to the caller to present again remaining data.
+   --  @return : a size hint, preferred nb of bytes to use as input for next function call
+   --           (it's just a hint, to help latency a little, any other value will work fine)
+   --           (note : the size hint is guaranteed to be <= ZSTD_CStreamInSize() )
+   --            or an error code, which can be tested using ZSTD_isError().
+
+   --  recommended size for input buffer
+   function ZSTD_CStreamInSize return IC.size_t;
+   pragma Import (C, ZSTD_CStreamInSize, "ZSTD_CStreamInSize");
+
+   --  recommended size for output buffer
+   function ZSTD_CStreamOutSize return IC.size_t;
+   pragma Import (C, ZSTD_CStreamOutSize, "ZSTD_CStreamOutSize");
+
+   function ZSTD_compressStream
+     (zcs    : ZSTD_CStream_ptr;
+      output : ZSTD_outBuffer_s_Access;
+      input  : ZSTD_inBuffer_s_Access) return IC.size_t;
+   pragma Import (C, ZSTD_compressStream, "ZSTD_compressStream");
+
+   --  At any moment, it's possible to flush whatever data remains within buffer,
+   --  using ZSTD_flushStream().  `output->pos` will be updated.
+   --  Note some content might still be left within internal buffer if `output->size` is too small.
+   --  @return : nb of bytes still present within internal buffer (0 if it's empty)
+   --            or an error code, which can be tested using ZSTD_isError().
+
+   function ZSTD_flushStream
+     (zcs    : ZSTD_CStream_ptr;
+      output : ZSTD_outBuffer_s_Access) return IC.size_t;
+   pragma Import (C, ZSTD_flushStream, "ZSTD_flushStream");
+
+   --  ZSTD_endStream() instructs to finish a frame.
+   --  It will perform a flush and write frame epilogue.
+   --  The epilogue is required for decoders to consider a frame completed.
+   --  Similar to ZSTD_flushStream(), it may not be able to flush the full content if
+   --  `output->size` is too small so call again ZSTD_endStream() to complete the flush.
+   --  @return : nb of bytes still present within internal buffer (0 if it's empty)
+   --            or an error code, which can be tested using ZSTD_isError().
+
+   function ZSTD_endStream
+     (zcs    : ZSTD_CStream_ptr;
+      output : ZSTD_outBuffer_s_Access) return IC.size_t;
+   pragma Import (C, ZSTD_endStream, "ZSTD_endStream");
+
+   -------------------------------
+   --  Streaming Decompression  --
+   -------------------------------
+
+   --  A ZSTD_DStream object is required to track streaming operations.
+   --  Use ZSTD_createDStream() and ZSTD_freeDStream() to create/release resources.
+   --  ZSTD_DStream objects can be re-used multiple times.
+
+   function ZSTD_createDStream return ZSTD_DStream_ptr;
+   pragma Import (C, ZSTD_createDStream, "ZSTD_createDStream");
+
+   function ZSTD_freeDStream (zds : ZSTD_DStream_ptr) return IC.size_t;
+   pragma Import (C, ZSTD_freeDStream, "ZSTD_freeDStream");
+
+   --  Use ZSTD_initDStream() to start a new decompression operation,
+
+   function ZSTD_initDStream (zds : ZSTD_DStream_ptr) return IC.size_t;
+   pragma Import (C, ZSTD_initDStream, "ZSTD_initDStream");
+
+   --  Use ZSTD_decompressStream() repetitively to consume your input.
+   --  The function will update both `pos`.
+   --  Note that it may not consume the entire input (pos < size),
+   --  in which case it's up to the caller to present remaining input again.
+   --  @return : 0 when a frame is completely decoded and fully flushed,
+   --            1 when there is still some data left within internal buffer to flush,
+   --            >1 when more data is expected, with value being a suggested next input size
+   --               (it's just a hint, which helps latency, any size is accepted),
+   --               or an error code, which can be tested using ZSTD_isError().
+
+   function ZSTD_DStreamInSize return IC.size_t;
+   pragma Import (C, ZSTD_DStreamInSize, "ZSTD_DStreamInSize");
+
+   function ZSTD_DStreamOutSize return IC.size_t;
+   pragma Import (C, ZSTD_DStreamOutSize, "ZSTD_DStreamOutSize");
+
+   function ZSTD_decompressStream
+     (zds    : ZSTD_DStream_ptr;
+      output : ZSTD_outBuffer_s_Access;
+      input  : ZSTD_inBuffer_s_Access) return IC.size_t;
+   pragma Import (C, ZSTD_decompressStream, "ZSTD_decompressStream");
+
 end Zstandard.Thin_Binding;

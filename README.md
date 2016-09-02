@@ -17,7 +17,7 @@ highest possible ratio (which LZMA and ZPAQ cover) nor extreme speeds (which
 LZ4 covers).
 
 **Zstd** is developed by Yann Collet and the source is available at:
-https://github.com/Cyan4973/zstd
+https://github.com/facebook/zstd
 
 The motivation for development, the algorithm used and its properties are
 explained in the blog post that introduces the library:
@@ -39,13 +39,6 @@ These work using either providing strings as input (and strings are returned)
 or using files as input (and files are produced).  Using helper functions to
 read and write entire files, the user could also read files and receive strings
 as the result (and vice-versa).
-
-Left To Do
-----------
-
-As of this writing, the Zstd library is at v0.8.0.  The streaming compression
-and decompression API is not stable yet.  Once it appears in the shared library,
-bindings for this functionality will be added.
 
 Documentation
 -------------
