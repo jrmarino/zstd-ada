@@ -207,6 +207,9 @@ package Zstandard.Thin_Binding is
    type ZSTD_CStream_ptr is new System.Address;
    type ZSTD_DStream_ptr is new System.Address;
 
+   Null_CStream_pointer : constant ZSTD_CStream_ptr := ZSTD_CStream_ptr (System.Null_Address);
+   Null_DStream_pointer : constant ZSTD_DStream_ptr := ZSTD_DStream_ptr (System.Null_Address);
+
    --  *src <start of input buffer>
    --  size <size of input buffer>
    --  pos  <position where reading stopped. Will be updated. Necessarily 0 <= pos <= size>
