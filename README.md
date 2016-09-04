@@ -34,6 +34,8 @@ The API methods in the shared library are supported, including:
  * standard decompression
  * compression using a dictionary
  * decompression using a dictionary
+ * streaming compression
+ * streaming decompression
 
 These work using either providing strings as input (and strings are returned)
 or using files as input (and files are produced).  Using helper functions to
