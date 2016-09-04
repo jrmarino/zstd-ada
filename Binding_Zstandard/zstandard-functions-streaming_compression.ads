@@ -25,7 +25,7 @@ package Zstandard.Functions.Streaming_Compression is
    procedure Finalize_Compression_Frame (mechanism : Compressor);
 
    --  Recommended input buffer size (for Compress_Data).
-   --  If called after "initialize", it will be the standard ZSTD_CStreamInSize result
+   --  If called before "Compress_Data", it will be the standard ZSTD_CStreamInSize result
    --  After "Compress_Data" execution, it will be passed on the resultant hint
    function Next_Data_Size_Recommendation (mechanism : Compressor) return Positive;
 
@@ -41,7 +41,7 @@ private
       record
          target_stream  : access STR.Root_Stream_Type'Class;
          zstd_stream    : Thin.ZSTD_CStream_ptr := Thin.Null_CStream_pointer;
-         data_size_hint : Thin.IC.size_t;
+         data_size_hint : Thin.IC.size_t := Buffer_Output_Size;
       end record;
 
    function convert_to_stream_array

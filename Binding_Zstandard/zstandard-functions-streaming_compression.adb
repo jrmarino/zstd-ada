@@ -24,8 +24,6 @@ package body Zstandard.Functions.Streaming_Compression is
       if Natural (Thin.ZSTD_isError (code => initResult)) /= 0 then
          raise streaming_compression_initialization with "ZSTD_initCStream failure";
       end if;
-
-      mechanism.data_size_hint := Thin.ZSTD_CStreamInSize;
    end Initialize;
 
 
